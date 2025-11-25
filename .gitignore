@@ -205,3 +205,29 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+# --- PyInstaller ---
+build/
+dist/
+*_internal/
+*.spec
+*.manifest
+
+# --- Tool outputs ---
+output/
+output_tiles/
+output_tiles_overlap/
+analytics_output/
+charts/
+plots/
+csv/
+data_cache/
+*.csv
+
+# --- Config personal files ---
+config.json
+settings.json
+
+# --- Temp ---
+*.tmp
+*.temp
+*.bak
