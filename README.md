@@ -11,7 +11,7 @@ A memory reading and overlay tool for **Supreme Ruler 2030**. This suite provide
 ## Installation
 1.  Download the latest release.
 2.  Extract the ZIP file to a folder of your choice.
-3.  Run `RulerSuite.exe`.
+3.  Run "LAUNCH_SUITE.exe`.
 *Requires Windows 10/11 and .NET Framework 4.8 or later.*
 
 ## Usage
