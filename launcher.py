@@ -216,10 +216,37 @@ def should_save(mode: str, current_date: str, last_saved_date: str | None) -> bo
 # OVERLAY MANAGEMENT
 # ============================================================
 
+def find_overlay_executable():
+    # Running from PyInstaller
+    if hasattr(sys, "_MEIPASS"):
+        base = Path(sys._MEIPASS)
+        exe = base / "run_overlay.exe"
+        if exe.exists():
+            return exe
+
+    # Running from source
+    return Path(__file__).parent / "run_overlay.py"
+
+def find_overlay_executable():
+    """
+    Return the correct path to run_overlay.exe when packaged with PyInstaller,
+    otherwise return run_overlay.py when running from source.
+    """
+    # PyInstaller bundle?
+    if hasattr(sys, "_MEIPASS"):
+        base = Path(sys._MEIPASS)
+        exe = base / "run_overlay.exe"
+        if exe.exists():
+            return exe
+    
+    # Running from source
+    return Path(__file__).parent / "run_overlay.py"
+
+
 def launch_overlay(config: dict):
     """
-    Start the INS overlay process if it is not already running.
-    Passes DEFAULT.UNIT, DEFAULT.TTRX, and Spotting.csv paths when available.
+    Start the INS overlay process (standalone executable or .py).
+    Passes DEFAULT.UNIT, DEFAULT.TTRX, Spotting.csv.
     """
     global overlay_process
     
@@ -228,97 +255,71 @@ def launch_overlay(config: dict):
     logger.info("=" * 60)
     
     try:
-        # Check if already running
+        # Already running?
         if overlay_process and overlay_process.poll() is None:
             logger.info("Overlay process already running, skipping launch.")
             return
 
-        # Find run_overlay.py
-        script_dir = Path(__file__).parent
-        run_overlay = script_dir / "run_overlay.py"
-        
-        logger.info(f"Script directory: {script_dir}")
-        logger.info(f"Looking for: {run_overlay}")
-        logger.info(f"File exists: {run_overlay.exists()}")
-        
-        if not run_overlay.exists():
-            logger.error("run_overlay.py not found, overlay will not be started.")
-            logger.error(f"Expected location: {run_overlay}")
+        overlay_exec = find_overlay_executable()
+
+        logger.info(f"Resolved overlay executable: {overlay_exec}")
+
+        if not overlay_exec.exists():
+            logger.error("Overlay executable not found!")
             return
 
-        # Build command
-        cmd = [sys.executable, str(run_overlay)]
-        logger.info(f"Python executable: {sys.executable}")
-
-        # Add paths only if they exist
-        unit_path = config.get("default_unit_path", "")
-        logger.info(f"Unit path from config: '{unit_path}'")
-        if unit_path and os.path.exists(unit_path):
-            cmd.extend(["--default-unit", unit_path])
-            logger.info(f"✓ Passing DEFAULT.UNIT: {unit_path}")
+        # ---------------------------------------------------------
+        # Build command: if .exe → run directly, if .py → use python
+        # ---------------------------------------------------------
+        if overlay_exec.suffix == ".exe":
+            cmd = [str(overlay_exec)]
         else:
-            logger.info(f"✗ Unit path not valid or not found")
+            cmd = [sys.executable, str(overlay_exec)]
 
-        ttrx_path = config.get("default_ttrx_path", "")
-        logger.info(f"TTRX path from config: '{ttrx_path}'")
-        if ttrx_path and os.path.exists(ttrx_path):
-            cmd.extend(["--default-ttrx", ttrx_path])
-            logger.info(f"✓ Passing DEFAULT.TTRX: {ttrx_path}")
-        else:
-            logger.info(f"✗ TTRX path not valid or not found")
-
-        spotting_path = config.get("default_spotting_path", "")
-        logger.info(f"Spotting path from config: '{spotting_path}'")
-        if spotting_path and os.path.exists(spotting_path):
-            cmd.extend(["--default-spotting", spotting_path])
-            logger.info(f"✓ Passing Spotting.csv: {spotting_path}")
-        else:
-            logger.info(f"✗ Spotting path not configured or not found, overlay will use fallback paths")
+        # Add valid paths
+        for flag, key in [
+            ("--default-unit", "default_unit_path"),
+            ("--default-ttrx", "default_ttrx_path"),
+            ("--default-spotting", "default_spotting_path"),
+        ]:
+            p = config.get(key, "")
+            if p and os.path.exists(p):
+                logger.info(f"Passing {flag}: {p}")
+                cmd.extend([flag, p])
 
         logger.info(f"Full command: {cmd}")
-        logger.info(f"Working directory: {script_dir}")
-        
+
+        # ---------------------------------------------------------
         # Launch process
-        logger.info("Attempting to start overlay process...")
+        # ---------------------------------------------------------
+        CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
         
-        if os.name == 'nt':
-            import subprocess
-            CREATE_NO_WINDOW = 0x08000000
-            overlay_process = subprocess.Popen(
-                cmd, 
-                cwd=str(script_dir),
-                creationflags=CREATE_NO_WINDOW,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-        else:
-            overlay_process = subprocess.Popen(
-                cmd, 
-                cwd=str(script_dir),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-        
+        overlay_process = subprocess.Popen(
+            cmd,
+            creationflags=CREATE_NO_WINDOW,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+
         logger.info(f"✓ Overlay process started with PID: {overlay_process.pid}")
-        
-        # Check if process is still alive after a moment
-        time.sleep(0.5)
-        poll_result = overlay_process.poll()
-        if poll_result is not None:
-            logger.error(f"✗ Overlay process terminated immediately with exit code: {poll_result}")
-            stdout, stderr = overlay_process.communicate()
-            if stdout:
-                logger.error(f"STDOUT: {stdout.decode('utf-8', errors='replace')}")
-            if stderr:
-                logger.error(f"STDERR: {stderr.decode('utf-8', errors='replace')}")
+
+        # Check immediate crash
+        time.sleep(0.4)
+        if overlay_process.poll() is not None:
+            code = overlay_process.poll()
+            logger.error(f"✗ Overlay terminated immediately with exit code: {code}")
+            out, err = overlay_process.communicate()
+            if out:
+                logger.error(f"STDOUT: {out.decode('utf-8', errors='replace')}")
+            if err:
+                logger.error(f"STDERR: {err.decode('utf-8', errors='replace')}")
         else:
-            logger.info("✓ Overlay process is running successfully")
-            
+            logger.info("✓ Overlay is running successfully")
+
     except Exception as e:
         logger.error(f"✗ Failed to launch overlay: {e}")
-        import traceback
         logger.error(traceback.format_exc())
-    
+
     logger.info("=" * 60)
 
 # ============================================================

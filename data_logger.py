@@ -4,9 +4,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-# ======================================================
-# CONFIGURAZIONE
-# ======================================================
 BASE_DIR = Path.home() / "Documents" / "SR2030_Logger"
 LOGS_DIR = BASE_DIR / "logs"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -31,23 +28,23 @@ ALL_POSSIBLE_COLUMNS = [
     "Consumer Goods Trades", "Industry Goods Trades", "Military Goods Trades",
 ]
 
-# ======================================================
-# FUNZIONI PRINCIPALI
-# ======================================================
 
 def _sanitize_filename(text: str) -> str:
-    """Sanifica testo per nome file"""
+    """Sanitize text for safe filename usage"""
     return "".join(c for c in text if c.isalnum() or c in (' ', '-', '_')).strip()
 
 
 def get_log_file_path(game_name: str, nation: str, use_timestamp: bool = False) -> Path:
     """
-    Genera percorso file di log.
+    Generate log file path.
     
     Args:
-        game_name: Nome partita
-        nation: Nome nazione
-        use_timestamp: Se True aggiunge timestamp
+        game_name: Game name
+        nation: Nation name
+        use_timestamp: If True adds timestamp
+        
+    Returns:
+        Path: Full path to log file
     """
     safe_game = _sanitize_filename(game_name)
     safe_nation = _sanitize_filename(nation)
@@ -69,14 +66,14 @@ def get_log_file_path(game_name: str, nation: str, use_timestamp: bool = False) 
 
 
 def log_to_csv(file_path: Path, data_dict: dict, game_date: str) -> bool:
-    """Scrive riga di dati nel CSV"""
+    """Write data row to CSV"""
     if not data_dict:
         return False
 
     file_path = Path(file_path)
     file_exists = file_path.exists() and file_path.stat().st_size > 0
 
-    # Prepara dati con mapping corretto
+    # Prepare data with correct mapping
     row_data = {key: data_dict.get(key) for key in ALL_POSSIBLE_COLUMNS}
     row_data['GameName'] = data_dict.get('game_name', data_dict.get('GameName'))
     row_data['Nation'] = data_dict.get('nation', data_dict.get('Nation'))
@@ -95,7 +92,7 @@ def log_to_csv(file_path: Path, data_dict: dict, game_date: str) -> bool:
 
 
 def get_existing_logs() -> list:
-    """Restituisce lista log esistenti con info dettagliate"""
+    """Return list of existing logs with detailed info"""
     if not LOGS_DIR.exists():
         return []
     
@@ -108,7 +105,7 @@ def get_existing_logs() -> list:
                 stats = file_path.stat()
                 modified = datetime.fromtimestamp(stats.st_mtime)
                 
-                # Conta righe
+                # Count rows
                 with open(file_path, 'r', encoding='utf-8-sig') as f:
                     line_count = max(0, sum(1 for _ in f) - 1)
                 
@@ -136,7 +133,7 @@ def get_existing_logs() -> list:
 
 
 def get_last_date_from_log(file_path: Path) -> Optional[str]:
-    """Legge ultima data da log"""
+    """Read last date from log file"""
     file_path = Path(file_path)
     if not file_path.exists():
         return None
@@ -160,7 +157,7 @@ def get_last_date_from_log(file_path: Path) -> Optional[str]:
         
         last_date = last_line[date_idx].strip()
         
-        # Valida formato
+        # Validate format
         try:
             datetime.strptime(last_date, "%Y-%m-%d")
             return last_date
@@ -172,7 +169,7 @@ def get_last_date_from_log(file_path: Path) -> Optional[str]:
 
 
 def create_backup(file_path: Path) -> bool:
-    """Crea backup del file con timestamp"""
+    """Create backup file with timestamp"""
     file_path = Path(file_path)
     if not file_path.exists():
         return False
@@ -192,7 +189,7 @@ def create_backup(file_path: Path) -> bool:
 
 
 def validate_log_file(file_path: Path) -> dict:
-    """Valida file di log"""
+    """Validate log file structure and content"""
     file_path = Path(file_path)
     result = {"valid": False, "errors": [], "warnings": [], "stats": {}}
     
@@ -208,7 +205,7 @@ def validate_log_file(file_path: Path) -> dict:
             result["errors"].append("File is empty")
             return result
         
-        # Valida header
+        # Validate header
         header = lines[0].strip().split(",")
         missing = [col for col in ["GameDate", "GameName", "Nation"] if col not in header]
         
@@ -222,7 +219,7 @@ def validate_log_file(file_path: Path) -> dict:
             "columns": len(header)
         }
         
-        # Controlla date duplicate
+        # Check for duplicate dates
         date_idx = header.index("GameDate")
         dates = []
         for i, line in enumerate(lines[1:], start=2):
@@ -241,7 +238,7 @@ def validate_log_file(file_path: Path) -> dict:
 
 
 def cleanup_old_backups(max_backups: int = 5):
-    """Rimuove backup vecchi mantenendo ultimi N"""
+    """Remove old backups keeping only the last N"""
     try:
         from collections import defaultdict
         backup_files = list(LOGS_DIR.glob("*_backup_*.csv"))
@@ -264,7 +261,7 @@ def cleanup_old_backups(max_backups: int = 5):
 
 
 def get_log_statistics() -> dict:
-    """Restituisce statistiche aggregate sui log"""
+    """Return aggregate statistics about logs"""
     logs = get_existing_logs()
     
     if not logs:

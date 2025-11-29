@@ -1,4 +1,3 @@
-# events.py
 from typing import TYPE_CHECKING
 
 from PyQt5.QtCore import Qt
@@ -7,16 +6,14 @@ if TYPE_CHECKING:
     from overlay_ins_menu import OverlayINS
 
 
-# -------------------------------------------------------------------------
 # KEYBOARD HANDLER
-# -------------------------------------------------------------------------
+
 def handle_key_press(ov: "OverlayINS", event) -> None:
-    # Se stiamo scrivendo nella TECH SEARCH (Tech Impact)
     if ov.view_mode == "tech_impact" and ov.tech_search_focus:
         key = event.key()
 
         if key in (Qt.Key_Return, Qt.Key_Enter):
-            # seleziona il primo risultato
+            # select firs rs
             if ov.tech_search_results:
                 ov.selected_tech_for_impact = ov.tech_search_results[0][0]
             ov.update()
@@ -40,7 +37,6 @@ def handle_key_press(ov: "OverlayINS", event) -> None:
                 ov.update()
             return
 
-    # Se stiamo scrivendo nella SEARCH UNIT (compare mode)
     if ov.focus_search:
         key = event.key()
 
@@ -65,22 +61,20 @@ def handle_key_press(ov: "OverlayINS", event) -> None:
                 ov.update_filter()
             return
 
-    # Toggle lock B (solo se NON sei in search)
+    # Toggle lock B 
     if not ov.focus_search and event.key() == Qt.Key_L:
         ov.lock_b = not ov.lock_b
         ov.update()
         return
 
-
-# -------------------------------------------------------------------------
 # MOUSE WHEEL (scroll)
-# -------------------------------------------------------------------------
+
 def handle_wheel(ov: "OverlayINS", event) -> None:
     pos = event.pos()
     delta = event.angleDelta().y()
     direction = 1 if delta < 0 else -1
 
-    # Scroll lista unità
+    # Scroll units list
     if ov.unit_list_rect.contains(pos):
         max_offset = max(0, len(ov.filtered_units) - 10)
         ov.unit_scroll_offset = max(
@@ -89,7 +83,7 @@ def handle_wheel(ov: "OverlayINS", event) -> None:
         ov.update()
         return
 
-    # Scroll tabella compare
+    # Scroll compare
     if ov.stats_rect.contains(pos) and ov.view_mode == "compare":
         ov.stats_scroll_offset = max(
             0, min(ov.max_stats_scroll, ov.stats_scroll_offset + direction)
@@ -106,9 +100,9 @@ def handle_wheel(ov: "OverlayINS", event) -> None:
         return
 
 
-# -------------------------------------------------------------------------
+
 # MOUSE PRESS (click)
-# -------------------------------------------------------------------------
+
 def handle_mouse_press(ov: "OverlayINS", event) -> None:
     pos = event.pos()
 
@@ -127,8 +121,6 @@ def handle_mouse_press(ov: "OverlayINS", event) -> None:
     if ov.close_btn_rect.contains(pos):
         ov.toggle_menu()
         return
-
-    # (Il focus delle search bar adesso è gestito in overlay_ins_menu.mousePressEvent)
 
     # Category filter
     for r, cid in ov.category_button_rects:
@@ -170,7 +162,7 @@ def handle_mouse_press(ov: "OverlayINS", event) -> None:
                     ov.update()
                     return
 
-                # Left click → toggle attivo / non attivo
+                # Left click  toggle 
                 if tid in ov.active_techs[key]:
                     ov.active_techs[key].remove(tid)
                 else:
@@ -201,6 +193,3 @@ def handle_mouse_press(ov: "OverlayINS", event) -> None:
 
             ov.update()
             return
-
-    # Da qui in giù NON gestiamo più la tech search:
-    # è tutta in overlay_ins_menu.mousePressEvent (unit filter + tech search results).
