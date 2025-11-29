@@ -1,4 +1,4 @@
-# Ruler Intelligence Suite - Alpha 0,1 (testing)
+# Unoffcial Ruler Intelligence Suite - Alpha 0,1 (testing)
 
 A memory reading and overlay tool for **Supreme Ruler 2030**. This suite provides real-time unit comparison, technology impact analysis, and detailed economic logging.
 ## Features
@@ -62,3 +62,5 @@ Help is welcome to complete the following features:
 - Locate the in-game date pointer in memory for automatic logging.
 - Add global treasury, population, and debt data to the logger.
 - Fix missing missile size in unit composition.
+
+Note: No Game Files Included: This tool does not distribute any original game assets, data files (such as DEFAULT.UNIT or Spotting.csv), or proprietary content belonging to BattleGoat Studios.
