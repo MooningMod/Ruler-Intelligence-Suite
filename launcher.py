@@ -9,6 +9,8 @@ import threading
 import logging
 import time
 import csv
+import atexit
+import psutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -73,6 +75,7 @@ def load_config():
         "steam_id": STEAM_APP_ID,
         "default_unit_path": r"C:/Program Files (x86)/Steam/steamapps/common/Supreme Ruler 2030/Maps/DATA/DEFAULT.UNIT",
         "default_ttrx_path": r"C:/Program Files (x86)/Steam/steamapps/common/Supreme Ruler 2030/Maps/DATA/DEFAULT.TTRX",
+        "default_spotting_path": r"C:/Program Files (x86)/Steam/steamapps/common/Supreme Ruler 2030/Maps/DATA/Spotting.csv",
         "save_mode": "Daily",
         "polling_interval": 1.0,  # Default polling, works well even at higher game speeds
         "game_version": "FastTrack",
@@ -216,34 +219,107 @@ def should_save(mode: str, current_date: str, last_saved_date: str | None) -> bo
 def launch_overlay(config: dict):
     """
     Start the INS overlay process if it is not already running.
-    Passes DEFAULT.UNIT and DEFAULT.TTRX paths when available.
+    Passes DEFAULT.UNIT, DEFAULT.TTRX, and Spotting.csv paths when available.
     """
     global overlay_process
+    
+    logger.info("=" * 60)
+    logger.info("OVERLAY LAUNCH REQUESTED")
+    logger.info("=" * 60)
+    
     try:
+        # Check if already running
         if overlay_process and overlay_process.poll() is None:
-            # Already running
+            logger.info("Overlay process already running, skipping launch.")
             return
 
+        # Find run_overlay.py
         script_dir = Path(__file__).parent
         run_overlay = script_dir / "run_overlay.py"
+        
+        logger.info(f"Script directory: {script_dir}")
+        logger.info(f"Looking for: {run_overlay}")
+        logger.info(f"File exists: {run_overlay.exists()}")
+        
         if not run_overlay.exists():
-            logger.warning("run_overlay.py not found, overlay will not be started.")
+            logger.error("run_overlay.py not found, overlay will not be started.")
+            logger.error(f"Expected location: {run_overlay}")
             return
 
-        cmd = ["python", str(run_overlay)]
+        # Build command
+        cmd = [sys.executable, str(run_overlay)]
+        logger.info(f"Python executable: {sys.executable}")
 
-        unit_path = config.get("default_unit_path")
+        # Add paths only if they exist
+        unit_path = config.get("default_unit_path", "")
+        logger.info(f"Unit path from config: '{unit_path}'")
         if unit_path and os.path.exists(unit_path):
             cmd.extend(["--default-unit", unit_path])
+            logger.info(f"✓ Passing DEFAULT.UNIT: {unit_path}")
+        else:
+            logger.info(f"✗ Unit path not valid or not found")
 
-        ttrx_path = config.get("default_ttrx_path")
+        ttrx_path = config.get("default_ttrx_path", "")
+        logger.info(f"TTRX path from config: '{ttrx_path}'")
         if ttrx_path and os.path.exists(ttrx_path):
             cmd.extend(["--default-ttrx", ttrx_path])
+            logger.info(f"✓ Passing DEFAULT.TTRX: {ttrx_path}")
+        else:
+            logger.info(f"✗ TTRX path not valid or not found")
 
-        overlay_process = subprocess.Popen(cmd, cwd=str(script_dir))
-        logger.info("Overlay process started.")
+        spotting_path = config.get("default_spotting_path", "")
+        logger.info(f"Spotting path from config: '{spotting_path}'")
+        if spotting_path and os.path.exists(spotting_path):
+            cmd.extend(["--default-spotting", spotting_path])
+            logger.info(f"✓ Passing Spotting.csv: {spotting_path}")
+        else:
+            logger.info(f"✗ Spotting path not configured or not found, overlay will use fallback paths")
+
+        logger.info(f"Full command: {cmd}")
+        logger.info(f"Working directory: {script_dir}")
+        
+        # Launch process
+        logger.info("Attempting to start overlay process...")
+        
+        if os.name == 'nt':
+            import subprocess
+            CREATE_NO_WINDOW = 0x08000000
+            overlay_process = subprocess.Popen(
+                cmd, 
+                cwd=str(script_dir),
+                creationflags=CREATE_NO_WINDOW,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+        else:
+            overlay_process = subprocess.Popen(
+                cmd, 
+                cwd=str(script_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+        
+        logger.info(f"✓ Overlay process started with PID: {overlay_process.pid}")
+        
+        # Check if process is still alive after a moment
+        time.sleep(0.5)
+        poll_result = overlay_process.poll()
+        if poll_result is not None:
+            logger.error(f"✗ Overlay process terminated immediately with exit code: {poll_result}")
+            stdout, stderr = overlay_process.communicate()
+            if stdout:
+                logger.error(f"STDOUT: {stdout.decode('utf-8', errors='replace')}")
+            if stderr:
+                logger.error(f"STDERR: {stderr.decode('utf-8', errors='replace')}")
+        else:
+            logger.info("✓ Overlay process is running successfully")
+            
     except Exception as e:
-        logger.error(f"Failed to launch overlay: {e}")
+        logger.error(f"✗ Failed to launch overlay: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+    
+    logger.info("=" * 60)
 
 # ============================================================
 # LOGGING THREAD
@@ -356,7 +432,7 @@ class SettingsDialog:
         self.config = config
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("Ruler Intelligence Suite – Settings")
-        self.dialog.geometry("500x520")
+        self.dialog.geometry("500x530")
         self.dialog.transient(parent)
         self.dialog.grab_set()
 
@@ -456,6 +532,21 @@ class SettingsDialog:
         ttk.Entry(ttrx_frame, textvariable=ttrx_var, width=40).pack(side="left", fill="x", expand=True)
         ttk.Button(ttrx_frame, text="Browse...", command=lambda: self.browse_ttrx(ttrx_var)).pack(side="left", padx=(10, 0))
 
+        # SPOTTING.CSV PATH
+        ttk.Label(
+            main,
+            text="Spotting.csv path:",
+            font=("Courier New", 10, "bold"),
+        ).grid(row=13, column=0, sticky="w", pady=(15, 5))
+
+        spotting_var = tk.StringVar(value=config.get("default_spotting_path", ""))
+
+        spotting_frame = ttk.Frame(main)
+        spotting_frame.grid(row=14, column=0, columnspan=2, sticky="ew", padx=20)
+
+        ttk.Entry(spotting_frame, textvariable=spotting_var, width=40).pack(side="left", fill="x", expand=True)
+        ttk.Button(spotting_frame, text="Browse...", command=lambda: self.browse_spotting(spotting_var)).pack(side="left", padx=(10, 0))
+
 
         def save():
             config["save_mode"] = mode_var.get()
@@ -463,6 +554,7 @@ class SettingsDialog:
             config["game_version"] = version_var.get()
             config["default_unit_path"] = unit_var.get()
             config["default_ttrx_path"] = ttrx_var.get()
+            config["default_spotting_path"] = spotting_var.get()
             save_config(config)
             messagebox.showinfo("Saved", "Configuration updated.")
             self.dialog.destroy()
@@ -494,6 +586,16 @@ class SettingsDialog:
             self.config["default_ttrx_path"] = filepath
             save_config(self.config)
 
+    def browse_spotting(self, var):
+        filepath = filedialog.askopenfilename(
+            title="Select Spotting.csv",
+            filetypes=[("CSV file", "*.csv"), ("All files", "*.*")]
+        )
+        if filepath:
+            var.set(filepath)
+            self.config["default_spotting_path"] = filepath
+            save_config(self.config)
+
 # ============================================================
 # MAIN APP
 # ============================================================
@@ -503,7 +605,7 @@ class App:
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Ruler Intelligence Suite | Strategic Analysis Directorate. v.1. By Mooning")
+        self.root.title("Ruler Intelligence Suite | Strategic Analysis Directorate. ALPHA v.0.1. By Mooning")
         # Sized to match the vertical clipboard / paper background
         self.root.geometry("600x730")
         self.root.resizable(False, False)
@@ -950,6 +1052,15 @@ class App:
         global logging_started
         logging_started = False
 
+def kill_overlay():
+    global overlay_process
+    if overlay_process and overlay_process.poll() is None:
+        try:
+            psutil.Process(overlay_process.pid).terminate()
+        except Exception:
+            pass
+
+atexit.register(kill_overlay)
 # ============================================================
 # ENTRY POINT
 # ============================================================

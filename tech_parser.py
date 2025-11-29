@@ -2,9 +2,9 @@ import csv
 from pathlib import Path
 
 def load_tech_file(path):
-    """Legge il file DEFAULT.TTRX / DEFAULT.TTR e costruisce due strutture:
-       - TECH_DATA_LIGHT  : solo short title + effetti
-       - TECH_DATA_FULL   : tutte le colonne
+    """reads DEFAULT.TTRX / DEFAULT.TTR:
+       - TECH_DATA_LIGHT  :  short title + effects
+       - TECH_DATA_FULL   : all
     """
 
     TECH_DATA_LIGHT = {}
@@ -13,7 +13,7 @@ def load_tech_file(path):
     with open(path, "r", encoding="Windows-1252") as f:
         lines = f.readlines()
 
-    # Trova l'indice di &&TTR (inizio tech)
+    # find index &&TTR 
     start_index = None
     for i, line in enumerate(lines):
         if line.strip().startswith("&&TTR"):
@@ -23,7 +23,7 @@ def load_tech_file(path):
     if start_index is None:
         raise ValueError("Sezione &&TTR non trovata nel file tech.")
 
-    # Legge tutte le tech come CSV
+    # reads techs as CSV
     reader = csv.reader(lines[start_index:], delimiter=",")
     
     for row in reader:
@@ -38,16 +38,17 @@ def load_tech_file(path):
         except:
             continue
 
-        # Effetti (ID effetto)
+        # effects (ID)
         effect_ids = []
         for col in [6, 7, 8, 9]:
             if row[col].strip() != "":
                 try:
+                    val = int(row[col])
                     effect_ids.append(int(row[col]))
                 except:
                     pass
 
-        # Valori effetto
+        # values
         effect_values = []
         for col in [10, 11, 12, 13]:
             if row[col].strip() != "":
@@ -56,13 +57,12 @@ def load_tech_file(path):
                 except:
                     pass
 
-        # Short Title (commento alla riga)
+        # Short Title 
         short_title = ""
         comment_split = row[-1].split("//")
         if len(comment_split) > 1:
             short_title = comment_split[-1].strip()
 
-        # ==== VERSIONE LEGGERA ====
         TECH_DATA_LIGHT[tech_id] = {
             "short_title": short_title,
             "effects": [
@@ -71,7 +71,7 @@ def load_tech_file(path):
             ]
         }
 
-        # ==== VERSIONE COMPLETA ====
+        # ==== complete ver
         TECH_DATA_FULL[tech_id] = {
             "id": tech_id,
             "category": row[1],

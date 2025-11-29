@@ -6,6 +6,9 @@ from PyQt5.QtCore import Qt, QRect, QTimer
 from PyQt5.QtGui import QPainter, QColor, QFont
 from PyQt5.QtWidgets import QWidget, QApplication
 
+# Import official effect logic from your updated tech_effects.py
+from tech_effects import EFFECT_MAP as CORE_EFFECT_MAP, BOOL_EFFECT_MAP
+
 try:
     import pymem
     import pymem.process
@@ -13,44 +16,101 @@ except ImportError:
     pymem = None
     print("[Memory] WARNING: pymem is not installed. Selected unit reading is disabled.")
 
-from unit_parser import parse_default_unit, Unit
+from unit_parser import parse_default_unit, Unit, load_range_database
 from tech_parser import load_tech_file
-
+# UPDATED IMPORT
+from spotting_parser import load_spotting_file
 from painters import draw_unit_list, draw_comparison_table
-# Gestione eventi
 from events import handle_mouse_press, handle_wheel
+
+# =============================================================================
+# TECH LABEL MAP (UPDATED TO OFFICIAL DOCS)
+# =============================================================================
+TECH_LABEL_MAP = {
+    # --- Attack Values ---
+    140: "Soft Attack", 
+    141: "Hard Attack", 
+    142: "Fortification Att.",
+    143: "Low Air Attack", 
+    144: "Mid Air Attack", 
+    145: "High Air Attack",
+    146: "Naval Surface Att.", 
+    147: "Submarine Att.",     
+    148: "Close Combat",
+
+    # --- Ranges ---
+    150: "Ground Range", 
+    151: "Air Range", 
+    152: "Naval Range", 
+    153: "Sub Range",
+
+    # --- Defense ---
+    154: "Ground Defense", 
+    155: "Tactical Air Defense", 
+    156: "Indirect Def (Art)", 
+    157: "Close Defense",
+
+    # --- Specs ---
+    158: "Speed (km/h)", 
+    159: "Stealth Rating", 
+    160: "Initiative", 
+    161: "Combat Time (Ammo)",
+
+    # --- Logistics ---
+    162: "Fuel Consumption",  # 1.0 = +100% consumo (negativo)
+    163: "Missile Capacity", 
+    164: "Unit Efficiency",   # Morale/Quality base
+    165: "Ammo Capacity",
+    166: "Fuel Tank Size",     # Capacità serbatoio
+
+    # --- Spotting ---
+    167: "Spotting Range (Vis)", 
+    168: "Spotting Range (Rad)",
+    169: "Spotting Str (Vis)",    
+    170: "Spotting Str (Rad)",
+}
 
 class OverlayINS(QWidget):
     """
     Supreme Ruler 2030 - 3-way unit comparison overlay.
     """
 
-    SELECTED_UNIT_OFFSET = 0x1767628  # from Cheat Engine
+    SELECTED_UNIT_OFFSET = 0x1767628 
 
-    def __init__(self, default_unit_path: str | None = None, default_ttrx_path: str | None = None):
+    def __init__(self, 
+                 default_unit_path: str | None = None, 
+                 default_ttrx_path: str | None = None,
+                 default_spotting_path: str | None = None,
+                 range_database_path: str | None = None):
         super().__init__()
+
+        # --- Tech Impact Scrollbar State ---
+        self.techimpact_dragging = False
+        self.techimpact_drag_offset = 0
 
         # Data
         self.units: list[Unit] = []
         self.filtered_units: list[Unit] = []
+        
+        self.tech_unlocks: dict[int, list[Unit]] = {}
 
         # Selection slots
         self.selected_unit_b: Unit | None = None
         self.selected_unit_c: Unit | None = None
         self.selected_unit_d: Unit | None = None
 
-        # Tech data (da DEFAULT.TTRX)
+        # Tech data (from DEFAULT.TTRX)
         self.tech_light: dict[int, dict] = {}
         self.tech_full: dict[int, dict] = {}
 
-        # Stato tech attive per B/C/D
+        # Active techs for B/C/D
         self.active_techs: dict[str, set[int]] = {
             "b": set(),
             "c": set(),
             "d": set(),
         }
 
-        # Checkbox rects per tech
+        # Checkbox rects for techs
         self.tech_checkbox_rects: dict[str, dict[int, QRect]] = {
             "b": {},
             "c": {},
@@ -63,7 +123,7 @@ class OverlayINS(QWidget):
         self.btn_b_to_c_rect = QRect()
         self.btn_c_to_d_rect = QRect()
 
-        # Filters
+        # Filters Main Unit List
         self.search_query: str = ""
         self.selected_category: str = "all"
         self.focus_search: bool = False
@@ -87,19 +147,26 @@ class OverlayINS(QWidget):
         self.tab_compare_rect = QRect()
         self.tab_tech_rect = QRect()
         
-        # Tech Search Box 
+        # --- Tech Search Box (Find Tech) ---
         self.tech_search = ""
         self.tech_search_focus = False
         self.tech_search_results = []    
         self.tech_search_max_display = 6 
-        
         self.tech_search_rect = QRect()
         self.tech_search_result_rects = []
-        self.techimpact_unit_rects = {}
         
-        # Scroll Tech Impact
+        # --- Impact Unit Filter (Filter units in Tech View) ---
+        self.impact_unit_search = ""
+        self.focus_impact_unit_search = False
+        self.impact_unit_search_rect = QRect()
+
+        self.techimpact_unit_rects = {}
         self.techimpact_scroll_offset = 0
         self.techimpact_max_scroll = 0
+        
+        # Scrollbar Rects (Initialize empty)
+        self.techimpact_scrollbar_track_rect = QRect()
+        self.techimpact_scrollbar_handle_rect = QRect()
 
         # Visibility & input
         self.menu_visible = False
@@ -112,19 +179,41 @@ class OverlayINS(QWidget):
 
         # Init
         self.init_window()
+        
+        # 1. Load Range Database FIRST (so parser can use it)
+        self.load_range_database(range_database_path)
+        
+        # 2. Load Spotting Data SECOND (so units can use it)
+        self.load_spotting(default_spotting_path)
+        
+        # 3. Load Units
         self.load_units(default_unit_path)
-        # FIX: passiamo l'argomento alla funzione load_techs
+        
+        # 4. Load Techs
         self.load_techs(default_ttrx_path)
+        
+        self._calculate_tech_unlocks()
+ 
         self.update_filter()
         self._attach_process()
 
-        # Timer loop (RIPORTATO A 30ms per fluidità interfaccia)
+        # Timer loop 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.game_loop)
         self.timer.start(30) 
+        
+    def _calculate_tech_unlocks(self):
+        self.tech_unlocks = {}
+        for u in self.units:
+            tid = getattr(u, 'req_tech_id', 0) or getattr(u, 'tech_req', 0)
+            if tid > 0:
+                if tid not in self.tech_unlocks:
+                    self.tech_unlocks[tid] = []
+                self.tech_unlocks[tid].append(u)
+        print(f"[System] Mapped unlocks for {len(self.tech_unlocks)} technologies.")
 
         print("-" * 60)
-        print("SR2030 - INS Overlay (Fixed Version)")
+        print("SR2030 - INS Overlay (Full Features)")
         print("-" * 60)
 
     # ------------------------------------------------------------------ Memory
@@ -137,7 +226,7 @@ class OverlayINS(QWidget):
             self.base_addr = mod.lpBaseOfDll
             print(f"[Memory] Attached to SR2030, base = {hex(self.base_addr)}")
         except Exception as e:
-            print(f"[Memory] Could not attach to process: {e}")
+            # Silent after first fail
             self.pm = None
             self.base_addr = None
 
@@ -155,7 +244,7 @@ class OverlayINS(QWidget):
             if val <= 0:
                 return None
             return val
-        except Exception as e:
+        except Exception:
             self.pm = None
             self.base_addr = None
             return None
@@ -183,7 +272,7 @@ class OverlayINS(QWidget):
         except Exception:
             pass
 
-        # Aggiorna colonna B dalla unit selezionata in gioco SOLO se non lockata
+        # Update column B from selected unit in game ONLY if not locked
         if self.menu_visible and not self.lock_b:
             u = self._read_selected_unit_obj()
             if u:
@@ -207,6 +296,42 @@ class OverlayINS(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.hide()
 
+    def load_spotting(self, default_spotting_path: str | None):
+        paths = []
+        if default_spotting_path:
+            paths.append(Path(default_spotting_path))
+        
+        # Standard Steam path
+        paths.append(Path(r"C:\Program Files (x86)\Steam\steamapps\common\Supreme Ruler 2030\Maps\DATA\Spotting.csv"))
+        # Local fallback
+        paths.append(Path(__file__).with_name("Spotting.csv"))
+
+        for p in paths:
+            if p and p.exists():
+                load_spotting_file(str(p))
+                return
+        
+        print("[Spotting] WARNING: Spotting.csv not found. Radar ranges will be 0.")
+
+    def load_range_database(self, range_database_path: str | None):
+        """Load unit range stats database from CSV (silent if not found)"""
+        paths = []
+        
+        # User-specified path
+        if range_database_path:
+            paths.append(Path(range_database_path))
+        
+        # Same directory as overlay script/exe
+        paths.append(Path(__file__).parent / "unit_rangestats_database.csv")
+        
+        # Current working directory (launcher location)
+        paths.append(Path.cwd() / "unit_rangestats_database.csv")
+        
+        for p in paths:
+            if p and p.exists():
+                load_range_database(str(p))
+                return
+
     def load_units(self, default_unit_path: str | None):
         paths = [
             Path(default_unit_path) if default_unit_path else None,
@@ -224,17 +349,10 @@ class OverlayINS(QWidget):
         print("[Units] WARNING: no DEFAULT.UNIT loaded")
 
     def load_techs(self, default_ttrx_path: str | None = None):
-        """Carica il tech tree. Accetta un path opzionale."""
         paths = []
-        
-        # 1. Path passato da argomento
         if default_ttrx_path:
             paths.append(Path(default_ttrx_path))
-            
-        # 2. Path standard di Steam
         paths.append(Path(r"C:\Program Files (x86)\Steam\steamapps\common\Supreme Ruler 2030\Maps\DATA\DEFAULT.TTRX"))
-        
-        # 3. Path locale
         paths.append(Path(__file__).with_name("DEFAULT.TTRX"))
         
         for p in paths:
@@ -293,19 +411,27 @@ class OverlayINS(QWidget):
             self.menu_visible = False
             self.hide()
             self.focus_search = False
+            # Reset special focus
+            self.tech_search_focus = False
+            self.focus_impact_unit_search = False
 
     # ------------------------------------------------------------- Qt events
     def keyPressEvent(self, event):
         if not self.menu_visible:
             return
+        
+        # If no search field has focus, check global hotkeys (e.g., Lock)
+        no_focus_active = not (self.focus_search or self.tech_search_focus or self.focus_impact_unit_search)
 
         # Toggle Lock B
-        if not self.focus_search and not self.tech_search_focus and event.key() == Qt.Key_L:
+        if no_focus_active and event.key() == Qt.Key_L:
             self.lock_b = not self.lock_b
             self.update()
             return
 
-        # Gestione Search Bar Units
+        # ----------------------------------------
+        # 1. Main Unit Search (Filter)
+        # ----------------------------------------
         if self.focus_search:
             key = event.key()
             if key in (Qt.Key_Return, Qt.Key_Enter):
@@ -325,9 +451,10 @@ class OverlayINS(QWidget):
             self.update()
             return
             
-        # Tech Search Box Focus
-        if self.tech_search_focus and self.view_mode == "tech_impact":
-             
+        # ----------------------------------------
+        # 2. Tech Search (Find Tech by ID/Name)
+        # ----------------------------------------
+        elif self.tech_search_focus and self.view_mode == "tech_impact":
              key = event.key()
              if key in (Qt.Key_Return, Qt.Key_Enter):
                 if self.tech_search_results:
@@ -350,53 +477,172 @@ class OverlayINS(QWidget):
                     self.update()
              return
 
+        # ----------------------------------------
+        # 3. Impact Unit Filter (Find unit in Tech view)
+        # ----------------------------------------
+        elif self.focus_impact_unit_search and self.view_mode == "tech_impact":
+             key = event.key()
+             if key in (Qt.Key_Return, Qt.Key_Enter):
+                self.focus_impact_unit_search = False
+                self.update()
+                return
+             elif key == Qt.Key_Backspace:
+                self.impact_unit_search = self.impact_unit_search[:-1]
+                self.techimpact_scroll_offset = 0 # reset scroll
+                self.update()
+                return
+             elif key == Qt.Key_Escape:
+                self.impact_unit_search = ""
+                self.focus_impact_unit_search = False
+                self.techimpact_scroll_offset = 0
+                self.update()
+                return
+             else:
+                ch = event.text()
+                if ch and ch.isprintable():
+                    self.impact_unit_search += ch
+                    self.techimpact_scroll_offset = 0
+                    self.update()
+             return
+
     def wheelEvent(self, event):
         if not self.menu_visible:
             return
         handle_wheel(self, event)
 
+    # -------------------------------------------------------------
+    # MOUSE EVENTS (Fixed Logic)
+    # -------------------------------------------------------------
+
     def mousePressEvent(self, event):
         if not self.menu_visible:
             return
-        
+
         pos = event.pos()
-        
-        # Check focus search units
+
+        # ==============================================================
+        # 1. PRIORITY FIX: CHECK DROPDOWN SELECTION FIRST!
+        # ==============================================================
+        if self.view_mode == "tech_impact" and self.tech_search_focus:
+            for rect, tid in getattr(self, "tech_search_result_rects", []):
+                if rect.contains(pos):
+                    # APPLY SELECTION
+                    self.selected_tech_for_impact = tid
+                    
+                    # Update text box info
+                    info = self.tech_light.get(tid, {})
+                    self.tech_search = info.get("short_title", f"Tech {tid}")
+
+                    # Close menu
+                    self.tech_search_results = []
+                    self.tech_search_result_rects = []
+                    self.tech_search_focus = False
+
+                    self.update()
+                    return  # <--- STOP HERE! Click consumed.
+
+        # ------------------------------------------------------------------
+        # 2. FOCUS HANDLING for the three search boxes
+        # ------------------------------------------------------------------
         if self.search_rect.contains(pos):
             self.focus_search = True
             self.tech_search_focus = False
-            self.update()
-            return
+            self.focus_impact_unit_search = False
+
+        elif self.view_mode == "tech_impact" and self.tech_search_rect.contains(pos):
+            self.focus_search = False
+            self.tech_search_focus = True
+            self.focus_impact_unit_search = False
+
+        elif self.view_mode == "tech_impact" and hasattr(self, "impact_unit_search_rect") \
+             and self.impact_unit_search_rect.contains(pos):
+            self.focus_search = False
+            self.tech_search_focus = False
+            self.focus_impact_unit_search = True
+
         else:
             self.focus_search = False
+            self.tech_search_focus = False
+            self.focus_impact_unit_search = False
 
+        # ------------------------------------------------------------------
+        # 3. Delegate general interactions
+        # ------------------------------------------------------------------
         handle_mouse_press(self, event)
-        self.update()
-        
-        # click in tech impact
+
+        # ------------------------------------------------------------------
+        # 4. SPECIAL INTERACTIONS FOR TECH IMPACT MODE
+        # ------------------------------------------------------------------
         if self.view_mode == "tech_impact":
+
+            # A) Check Scrollbar Handle
+            if hasattr(self, "techimpact_scrollbar_handle_rect") and \
+               not self.techimpact_scrollbar_handle_rect.isNull() and \
+               self.techimpact_scrollbar_handle_rect.contains(pos):
+               
+                self.techimpact_dragging = True
+                self.techimpact_drag_offset = pos.y() - self.techimpact_scrollbar_handle_rect.top()
+                self.update()
+                return
+
+            # B) Check Scrollbar Track
+            if hasattr(self, "techimpact_scrollbar_track_rect") and \
+               not self.techimpact_scrollbar_track_rect.isNull() and \
+               self.techimpact_scrollbar_track_rect.contains(pos):
+               
+                track_top = self.techimpact_scrollbar_track_rect.top()
+                track_h = self.techimpact_scrollbar_track_rect.height()
+                
+                if track_h > 0:
+                    rel_y = pos.y() - track_top
+                    ratio = rel_y / track_h
+                    self.techimpact_scroll_offset = int(ratio * self.techimpact_max_scroll)
+                    self.update()
+                return
+
+            # C) Selecting a UNIT from the Tech Impact list
+            btn = event.button()
             for uid, rect in self.techimpact_unit_rects.items():
                 if rect.contains(pos):
                     u = self._get_unit_by_id(uid)
-                    btn = event.button()
-
                     if btn == Qt.LeftButton:
-                        # LEFT → B
                         self.selected_unit_b = u
-
                     elif btn == Qt.RightButton:
-                        # RIGHT → D
                         self.selected_unit_d = u
-
                     elif btn == Qt.MiddleButton:
-                        # REAL MIDDLE CLICK → C
                         self.selected_unit_c = u
-
-                    if event.buttons() & Qt.MiddleButton:
-                        self.selected_unit_c = u
-                        
+                    self.focus_impact_unit_search = False
                     self.update()
                     return
+
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        if not self.menu_visible:
+            return
+        if self.view_mode == "tech_impact" and self.techimpact_dragging:
+            pos = event.pos()
+            if hasattr(self, "techimpact_scroll_start_y"):
+                relative_y = pos.y() - self.techimpact_scroll_start_y - self.techimpact_drag_offset
+                track_h = self.techimpact_scrollbar_track_rect.height()
+                handle_h = self.techimpact_scrollbar_handle_rect.height()
+                available_h = track_h - handle_h
+                
+                if available_h > 0:
+                    ratio = relative_y / available_h
+                    ratio = max(0.0, min(1.0, ratio))
+                    new_offset = int(ratio * self.techimpact_max_scroll)
+                    if new_offset != self.techimpact_scroll_offset:
+                        self.techimpact_scroll_offset = new_offset
+                        self.update()
+            return
+
+    def mouseReleaseEvent(self, event):
+        if self.techimpact_dragging:
+            self.techimpact_dragging = False
+            self.techimpact_drag_offset = 0
+            self.update()
+
     # ------------------------------------------------------------- Painting UI
     def paintEvent(self, event):
         if not self.menu_visible:
@@ -406,7 +652,6 @@ class OverlayINS(QWidget):
         p.setRenderHint(QPainter.Antialiasing, False)
 
         full = self.rect()
-
         panel_w = 1100
         panel_h = full.height() - 60
         px = full.width() - panel_w - 20
@@ -439,10 +684,9 @@ class OverlayINS(QWidget):
             f"Selected ID (raw): {rid}   | {lock_txt}   | L=B  R=C  M=D",
         )
 
-        # Search bar (normale)
+        # Search bar (Units)
         self.search_rect = QRect(px + 10, py + 30, panel_w - 50, 26)
         p.setBrush(QColor(10, 10, 10))
-        # Bordo giallo se attivo
         p.setPen(QColor(255, 200, 0) if self.focus_search else QColor(100, 100, 100))
         p.drawRect(self.search_rect)
         p.setPen(Qt.white)
@@ -452,7 +696,7 @@ class OverlayINS(QWidget):
         if self.focus_search and (len(display_text) == 0 or (ctypes.windll.kernel32.GetTickCount() // 500) % 2 == 0):
              display_text += "|"
         elif not self.focus_search and not self.search_query:
-             display_text = "Search Name or ID..."
+             display_text = "Search Unit..."
              p.setPen(QColor(150, 150, 150))
 
         p.drawText(
@@ -479,7 +723,7 @@ class OverlayINS(QWidget):
             p.drawText(r, Qt.AlignCenter, c.upper())
             cx += btn_w
 
-        # Unit list
+        # Unit list (Left Sidebar)
         list_y = cy + 22 + 4
         list_h = int(panel_h * 0.23)
         self.unit_list_rect = QRect(px + 10, list_y, panel_w - 20, list_h)
@@ -488,7 +732,7 @@ class OverlayINS(QWidget):
         p.drawRect(self.unit_list_rect)
         draw_unit_list(self, p)
 
-        # Stats area
+        # Stats area (Right Side)
         stats_y = list_y + list_h + 8
         stats_h = panel_h - (stats_y - py) - 8
         self.stats_rect = QRect(px + 10, stats_y, panel_w - 20, stats_h)
@@ -496,12 +740,113 @@ class OverlayINS(QWidget):
         p.setPen(QColor(55, 55, 65))
         p.drawRect(self.stats_rect)
         draw_comparison_table(self, p, self.stats_rect)
+
     def _get_unit_by_id(self, uid: int):
-        """Return unit object by SR2030 ID"""
         for u in self.units:
             if u.id == uid:
                 return u
         return None
+        
+    def get_tech_modified_stats(self, unit, tech_id):
+        """
+        Returns only the unit values modified by the tech.
+        Format: (attr, label, base, boosted)
+        """
+        info = self.tech_light.get(tech_id)
+        if not info:
+            return []
+
+        rows = []
+
+        for eff in info["effects"]:
+            eid = eff["effect_id"]
+            val = eff["value"]
+
+            # --- CASE A: Boolean Effects (On/Off) ---
+            if eid in BOOL_EFFECT_MAP:
+                attr = BOOL_EFFECT_MAP[eid]
+                base = getattr(unit, attr, 0)
+                if base == 0:
+                    label = TECH_LABEL_MAP.get(eid, attr.replace("_", " ").title())
+                    rows.append((attr, label, 0.0, 1.0))
+                continue
+
+            # --- CASE B: Numeric Effects (Attack, Defense, etc.) ---
+            if eid not in CORE_EFFECT_MAP:
+                continue
+
+            attr, mode = CORE_EFFECT_MAP[eid]
+            label = TECH_LABEL_MAP.get(eid, f"{attr.capitalize()} ({eid})")
+
+            base = getattr(unit, attr, None)
+            if base is None:
+                continue
+            
+            try:
+                if mode == "mul":
+                    boosted = base * (1.0 + float(val))
+                else:
+                    boosted = base + float(val)
+            except Exception:
+                continue
+
+            if abs(boosted - base) < 0.001:
+                continue
+
+            rows.append((attr, label, base, boosted))
+
+        return rows
+        # -------------------------------------------------------------
+    # Build merged unit list for Tech Impact View
+    # -------------------------------------------------------------
+    def build_tech_impact_unit_list(self, tech_id):
+        """
+        Returns a clean merged list of:
+        - units affected by the tech (effects)
+        - units unlocked by the tech (req_tech_id)
+        Deduplicated, sorted, and labeled.
+        """
+        effect_units = []
+        unlock_units = []
+
+        # 1) Units with EFFECTS
+        for u in self.units:
+            effects = self.get_tech_modified_stats(u, tech_id)
+            if effects:
+                effect_units.append((u, effects))
+
+        # 2) Units UNLOCKED by tech
+        unlock_list = self.tech_unlocks.get(tech_id, [])
+        for u in unlock_list:
+            unlock_units.append((u, []))
+
+        # 3) Merge + dedupe
+        merged = {}
+
+        # Units with effects first
+        for u, eff in effect_units:
+            merged[u.id] = {
+                "unit": u,
+                "effects": eff,
+                "unlock": False
+            }
+
+        # Add unlocked units
+        for u, eff in unlock_units:
+            if u.id not in merged:
+                merged[u.id] = {
+                    "unit": u,
+                    "effects": [],
+                    "unlock": True
+                }
+            else:
+                merged[u.id]["unlock"] = True
+
+        # 4) Sort: effects first, then unlock
+        final_list = list(merged.values())
+        final_list.sort(key=lambda x: (not x["effects"], not x["unlock"], x["unit"].id))
+
+        return final_list
 
         
 if __name__ == "__main__":

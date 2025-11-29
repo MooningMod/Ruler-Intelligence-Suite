@@ -128,13 +128,7 @@ def handle_mouse_press(ov: "OverlayINS", event) -> None:
         ov.toggle_menu()
         return
 
-    # --- SEARCH UNIT (compare) ---
-    if ov.search_rect.contains(pos):
-        ov.focus_search = True
-        ov.tech_search_focus = False
-        return
-    else:
-        ov.focus_search = False
+    # (Il focus delle search bar adesso è gestito in overlay_ins_menu.mousePressEvent)
 
     # Category filter
     for r, cid in ov.category_button_rects:
@@ -208,35 +202,5 @@ def handle_mouse_press(ov: "OverlayINS", event) -> None:
             ov.update()
             return
 
-    # ============================
-    #    TECH SEARCH (tech_impact)
-    # ============================
-    if ov.view_mode == "tech_impact":
-
-        # Focus search box
-        if ov.tech_search_rect.contains(pos):
-            ov.tech_search_focus = True
-            ov.focus_search = False
-            ov.update()
-            return
-        else:
-            ov.tech_search_focus = False
-
-        # Click un suggerimento
-        if hasattr(ov, "tech_search_result_rects"):
-            for r, tid in ov.tech_search_result_rects:
-                if r.contains(pos):
-                    ov.selected_tech_for_impact = tid
-                    ov.update()
-                    return
-    # ============================
-    #    TECH SEARCH (tech_impact)
-    # ============================
-    # Click dentro la search box
-    if ov.view_mode == "tech_impact" and hasattr(ov, "tech_search_rect"):
-        if ov.tech_search_rect.contains(pos):
-            ov.tech_search_focus = True
-            ov.focus_search = False
-            return
-        else:
-            ov.tech_search_focus = False
+    # Da qui in giù NON gestiamo più la tech search:
+    # è tutta in overlay_ins_menu.mousePressEvent (unit filter + tech search results).

@@ -789,6 +789,15 @@ class AnalyticsApp:
             if legend:
                 for text in legend.get_texts():
                     text.set_color(theme["fg"])
+                       # FIX: legend in Night Ops
+                if self.theme_mode.get() == "night":
+                    legend.get_frame().set_facecolor("#1A1F24")   # sfondo scuro
+                    legend.get_frame().set_edgecolor("#444444")
+                    legend.get_frame().set_alpha(0.9)
+                else:
+                    legend.get_frame().set_facecolor("#F0E6D2")
+                    legend.get_frame().set_edgecolor("#555555")
+                    legend.get_frame().set_alpha(0.95)
 
         self.fig.tight_layout()
         self.canvas_mpl.draw()
