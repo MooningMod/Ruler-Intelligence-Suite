@@ -146,18 +146,23 @@ def launch_game_steam(app_id: str) -> bool:
 
 def day_signature(sample: dict) -> str:
     """
-    Build a simple "signature" for the current day based on game stats.
-    As Treasury and Population change deterministically, this is enough
-    to detect a day rollover without accessing the in-game date.
+    Balanced day signature.
+    Treasury grouped by 5M, Population grouped by 2k.
+    Small variations ignored, day change still detected.
     """
     t = sample.get("Treasury")
     p = sample.get("Population")
+
     if t is None or p is None:
         return "N/A"
+
     try:
-        return f"T:{int(float(t))}_P:{int(float(p))}"
+        t_stable = int(float(t) // 5_000_000)   # treasury step → 5M
+        p_stable = int(float(p) // 2_000)       # population step → 2k
+        return f"T:{t_stable}_P:{p_stable}"
     except Exception:
         return "N/A"
+
 
 
 def get_last_date_from_csv(file_path: Path) -> str | None:
@@ -217,31 +222,31 @@ def should_save(mode: str, current_date: str, last_saved_date: str | None) -> bo
 # ============================================================
 
 def find_overlay_executable():
-    # Running from PyInstaller
-    if hasattr(sys, "_MEIPASS"):
-        base = Path(sys._MEIPASS)
-        exe = base / "run_overlay.exe"
-        if exe.exists():
-            return exe
-
-    # Running from source
-    return Path(__file__).parent / "run_overlay.py"
-
-def find_overlay_executable():
     """
-    Return the correct path to run_overlay.exe when packaged with PyInstaller,
-    otherwise return run_overlay.py when running from source.
+    Return the correct path to the overlay executable.
+    Checks:
+    1. Same directory as the running executable (Standard PyInstaller 2-exe setup)
+    2. Inside the PyInstaller _MEIPASS bundle (if bundled as onefile)
+    3. Source script (run_overlay.py) if running from Python
     """
-    # PyInstaller bundle?
-    if hasattr(sys, "_MEIPASS"):
-        base = Path(sys._MEIPASS)
-        exe = base / "run_overlay.exe"
-        if exe.exists():
-            return exe
-    
-    # Running from source
-    return Path(__file__).parent / "run_overlay.py"
+    # Se stiamo eseguendo come EXE (Frozen)
+    if getattr(sys, 'frozen', False):
+        application_path = Path(sys.executable).parent
+        
+        # 1. Cerca run_overlay.exe nella stessa cartella del launcher.exe
+        exe_next_to_launcher = application_path / "run_overlay.exe"
+        if exe_next_to_launcher.exists():
+            return exe_next_to_launcher
 
+        # 2. Cerca run_overlay.exe dentro il bundle (se lo hai incluso come binary)
+        if hasattr(sys, "_MEIPASS"):
+            bundled_exe = Path(sys._MEIPASS) / "run_overlay.exe"
+            if bundled_exe.exists():
+                return bundled_exe
+
+    # Se stiamo eseguendo da sorgente (.py)
+    # Oppure fallback
+    return Path(__file__).parent / "run_overlay.py"
 
 def launch_overlay(config: dict):
     """
@@ -1057,9 +1062,23 @@ def kill_overlay():
     global overlay_process
     if overlay_process and overlay_process.poll() is None:
         try:
-            psutil.Process(overlay_process.pid).terminate()
-        except Exception:
-            pass
+            p = psutil.Process(overlay_process.pid)
+
+            # 1. Terminate soft
+            p.terminate()
+            try:
+                p.wait(timeout=1.0)
+            except:
+                pass
+
+            # 2. Hard kill if still alive
+            if p.is_running():
+                p.kill()
+
+            print(f"[Launcher] Overlay {overlay_process.pid} terminated.")
+        except Exception as e:
+            print(f"[Launcher] Failed to terminate overlay: {e}")
+
 
 atexit.register(kill_overlay)
 # ============================================================
