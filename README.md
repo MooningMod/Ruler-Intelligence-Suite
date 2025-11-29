@@ -54,7 +54,7 @@ All logs are stored in: `Documents/SR2030_Logger/logs/`
 *   Resource comparison view
 *   Plot export and data filtering
 
-## Roadmap / to do
+## To do
 
 Help is welcome to complete the following features:
 - Map true in-game km values for all ground attack types (Soft, Hard, Fort, Naval Surface Attack).
