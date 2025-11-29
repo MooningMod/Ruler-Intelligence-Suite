@@ -91,4 +91,3 @@ For now, users must manually enter the start date.
 When the pointer is found, the logger will become fully automatic.
 5 Global treasury, pop, Debt included in logger
 
-https://github.com/MooningMod/Ruler-Intelligence-Suite
