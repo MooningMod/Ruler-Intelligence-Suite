@@ -243,7 +243,7 @@ def _draw_compare_stats_table(
         if missile_range_raw > 0:
             # Calculate displayed range: special_41_B * 4
             displayed_range = int(missile_range_raw * 4)
-            txt += f" RAW:{displayed_range}"
+            txt += f" Raw:{displayed_range} km"
             return (txt, False)
         
         # Otherwise use standard range display
@@ -268,11 +268,11 @@ def _draw_compare_stats_table(
             def_range = getattr(u, def_attr_name, 0.0)
         
         if raw_range > 0:
-            txt += f" RAW:{raw_range}"
+            txt += f" Raw:{raw_range} km"
         
         has_def = def_range > 0
         if has_def:
-            txt += f" DEF:{def_range:.1f}"
+            txt += f" DEF:{def_range:.1f} km"
         
         return (txt, has_def)
 

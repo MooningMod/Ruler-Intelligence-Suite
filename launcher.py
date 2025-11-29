@@ -297,13 +297,8 @@ def launch_overlay(config: dict):
         # ---------------------------------------------------------
         # Launch process
         # ---------------------------------------------------------
-        CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
-        
         overlay_process = subprocess.Popen(
             cmd,
-            creationflags=CREATE_NO_WINDOW,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
         )
 
         logger.info(f"✓ Overlay process started with PID: {overlay_process.pid}")

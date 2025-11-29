@@ -20,6 +20,12 @@ def main():
         range_database_path=args.range_database
     )
     sys.exit(app.exec_())
+    
+def closeEvent(self, event):
+    print("[Overlay] Closing overlay window.")
+    QApplication.quit()
+    event.accept()
+
 
 if __name__ == "__main__":
     main()
