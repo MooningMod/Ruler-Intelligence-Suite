@@ -63,6 +63,6 @@ Help is welcome to complete the following features:
 - Complete the air range (Air Low / Mid / High) mapping.
 - Locate the in-game date pointer in memory for automatic logging.
 - Add global treasury, population, and debt data to the logger.
-- Fix missing missile size in unit composition.
+- Fix missing missile size value
 
 Note: No Game Files Included: This tool does not distribute any original game assets, data files (such as DEFAULT.UNIT or Spotting.csv), or proprietary content belonging to BattleGoat Studios.
