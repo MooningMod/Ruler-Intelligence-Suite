@@ -1,5 +1,7 @@
 # Ruler Intelligence Suite - Alpha 0,1 (testing)
 
+https://www.youtube.com/watch?v=HUjywlrrUwY
+
 An unofficial memory reading and overlay tool for **Supreme Ruler 2030**. This suite provides real-time unit comparison, technology impact analysis, and detailed economic logging.
 ## Features
 *   **Live Unit Comparison:** Compare up to three units side-by-side with all stats, tech effects, and spotting ranges.
