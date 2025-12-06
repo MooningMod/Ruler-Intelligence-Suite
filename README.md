@@ -66,3 +66,29 @@ Help is welcome to complete the following features:
 - Fix missing missile size value
 
 Note: No Game Files Included: This tool does not distribute any original game assets, data files (such as DEFAULT.UNIT or Spotting.csv), or proprietary content belonging to BattleGoat Studios.
+
+
+Antivirus Notice – False Positives Expected
+
+This tool uses:
+memory reading (via pymem)
+process scanning
+a PyQt overlay
+PyInstaller executables
+
+Because of this, some antivirus systems — especially Norton, Avast, AVG and Windows Defender — may show warnings such as:
+
+“Unknown Publisher”
+“Low community reputation”
+
+These are false positives and are commonly triggered by new unsigned executables that interact with other processes.
+
+ Why It’s Safe
+
+The entire project is published on GitHub — source code is fully visible, auditable, and open to community inspection.
+ 100% open-source: users can see exactly what the tool does, line by line.
+Reproducible builds: anyone can compile the tool themselves using the included build scripts.
+ No file modifications: the tool does not alter game files or save data.
+ Read-only operations: memory access is strictly non-invasive; no DLLs are injected.
+ No internet communication: the tool does not send or receive data; no telemetry.
+ No admin privileges required: it runs under normal user permissions.
