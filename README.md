@@ -68,7 +68,7 @@ Help is welcome to complete the following features:
 Note: No Game Files Included: This tool does not distribute any original game assets, data files (such as DEFAULT.UNIT or Spotting.csv), or proprietary content belonging to BattleGoat Studios.
 
 
-Antivirus Notice – False Positives Expected
+##Antivirus Notice – False Positives Expected
 
 This tool uses:
 memory reading (via pymem)
