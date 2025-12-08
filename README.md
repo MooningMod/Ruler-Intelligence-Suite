@@ -1,4 +1,4 @@
-# Ruler Intelligence Suite - Alpha 0,1 (testing)
+# Ruler Intelligence Suite - V 1 (testing)
 
 https://www.youtube.com/watch?v=HUjywlrrUwY
 
@@ -55,6 +55,8 @@ All logs are stored in: `Documents/SR2030_Logger/logs/`
 *   Interactive charts with value labels
 *   Resource comparison view
 *   Plot export and data filtering
+
+### TECH Tree Viewer!!!
 
 ## To do
 
