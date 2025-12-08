@@ -1,5 +1,4 @@
-# Ruler Intelligence Suite - V 1 (testing)
-
+# Ruler Intelligence Suite - V 1
 https://www.youtube.com/watch?v=HUjywlrrUwY
 
 An unofficial memory reading and overlay tool for **Supreme Ruler 2030**. This suite provides real-time unit comparison, technology impact analysis, and detailed economic logging.
