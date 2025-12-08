@@ -10,7 +10,6 @@ import logging
 import time
 import csv
 import atexit
-import psutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -61,6 +60,8 @@ logging_started = False
 stop_event = threading.Event()
 overlay_process = None
 current_csv_path = None
+
+techtree_process = None
 
 # Shared config between UI and worker thread
 live_config = {}
@@ -146,9 +147,9 @@ def launch_game_steam(app_id: str) -> bool:
 
 def day_signature(sample: dict) -> str:
     """
-    Balanced day signature.
-    Treasury grouped by 5M, Population grouped by 2k.
-    Small variations ignored, day change still detected.
+    Day signature with tight thresholds.
+    Treasury grouped by 100K, Population grouped by 50.
+    Detects even small daily changes to prevent skipped days.
     """
     t = sample.get("Treasury")
     p = sample.get("Population")
@@ -157,8 +158,8 @@ def day_signature(sample: dict) -> str:
         return "N/A"
 
     try:
-        t_stable = int(float(t) // 5_000_000)   # treasury step → 5M
-        p_stable = int(float(p) // 2_000)       # population step → 2k
+        t_stable = int(float(t) // 100_000)   # treasury step → 100K (was 5M)
+        p_stable = int(float(p) // 50)        # population step → 50 (was 2K)
         return f"T:{t_stable}_P:{p_stable}"
     except Exception:
         return "N/A"
@@ -223,30 +224,35 @@ def should_save(mode: str, current_date: str, last_saved_date: str | None) -> bo
 
 def find_overlay_executable():
     """
-    Return the correct path to the overlay executable.
-    Checks:
-    1. Same directory as the running executable (Standard PyInstaller 2-exe setup)
-    2. Inside the PyInstaller _MEIPASS bundle (if bundled as onefile)
-    3. Source script (run_overlay.py) if running from Python
+    Find run_overlay.exe or fallback to run_overlay.py.
+    Searches inside SR2030_Suite folder: /run_overlay/
     """
-    # Se stiamo eseguendo come EXE (Frozen)
-    if getattr(sys, 'frozen', False):
-        application_path = Path(sys.executable).parent
-        
-        # 1. Cerca run_overlay.exe nella stessa cartella del launcher.exe
-        exe_next_to_launcher = application_path / "run_overlay.exe"
-        if exe_next_to_launcher.exists():
-            return exe_next_to_launcher
+    # Detect app folder (PyInstaller EXE or source)
+    base = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
 
-        # 2. Cerca run_overlay.exe dentro il bundle (se lo hai incluso come binary)
-        if hasattr(sys, "_MEIPASS"):
-            bundled_exe = Path(sys._MEIPASS) / "run_overlay.exe"
-            if bundled_exe.exists():
-                return bundled_exe
+    folder = base / "run_overlay"
 
-    # Se stiamo eseguendo da sorgente (.py)
-    # Oppure fallback
-    return Path(__file__).parent / "run_overlay.py"
+    # --- 1) Try EXE first ---
+    exe_path = folder / "run_overlay.exe"
+    if exe_path.exists():
+        return exe_path
+
+    # --- 2) Fallback to Python script ---
+    py_path = folder / "run_overlay.py"
+    if py_path.exists():
+        return py_path
+
+    # --- 3) Legacy fallback (very old versions) ---
+    exe_legacy = base / "run_overlay.exe"
+    if exe_legacy.exists():
+        return exe_legacy
+
+    py_legacy = base / "run_overlay.py"
+    if py_legacy.exists():
+        return py_legacy
+
+    return None
+
 
 def launch_overlay(config: dict):
     """
@@ -321,6 +327,100 @@ def launch_overlay(config: dict):
         logger.error(traceback.format_exc())
 
     logger.info("=" * 60)
+
+def find_techtree_executable():
+    """
+    Find tech_tree_analyzer.exe or fallback to .py.
+    Searches inside /tech_tree_analyzer/ under the suite dir.
+    """
+    base = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
+
+    folder = base / "tech_tree_analyzer"
+
+    # --- 1) Try EXE ---
+    exe_path = folder / "tech_tree_analyzer.exe"
+    if exe_path.exists():
+        return exe_path
+
+    # --- 2) Fallback to Python script ---
+    py_path = folder / "tech_tree_analyzer.py"
+    if py_path.exists():
+        return py_path
+
+    # --- 3) Legacy fallback ---
+    exe_legacy = base / "tech_tree_analyzer.exe"
+    if exe_legacy.exists():
+        return exe_legacy
+
+    py_legacy = base / "tech_tree_analyzer.py"
+    if py_legacy.exists():
+        return py_legacy
+
+    return None
+
+
+def launch_techtree(config: dict):
+    """Launch the Tech Tree Analyzer as a subprocess."""
+    global techtree_process
+    
+    if techtree_process and techtree_process.poll() is None:
+        logger.info("Tech Tree Analyzer already running.")
+        return True
+
+    script_path = find_techtree_executable()
+    if not script_path:
+        logger.error("Tech Tree Analyzer not found!")
+        messagebox.showerror("Error", "tech_tree_analyzer executable/script not found.")
+        return False
+    
+    try:
+        path_obj = Path(script_path)
+        ttrx_path = config.get("default_ttrx_path", "")
+        unit_path = config.get("default_unit_path", "")
+        
+        cmd = []
+        
+        if path_obj.suffix.lower() == ".exe":
+            cmd = [str(path_obj)]
+        else:
+            cmd = [sys.executable, str(path_obj)]
+            
+        cmd.extend([ttrx_path, unit_path])
+        
+        logger.info(f"Launching Tech Tree: {cmd}")
+
+        techtree_process = subprocess.Popen(
+            cmd,
+            cwd=str(path_obj.parent) 
+        )
+        logger.info(f"Tech Tree Analyzer launched (PID: {techtree_process.pid})")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to launch Tech Tree Analyzer: {e}")
+        logger.error(traceback.format_exc()) #  debug
+        return False
+
+
+def kill_techtree():
+    """Terminate the Tech Tree Analyzer process."""
+    global techtree_process
+    if techtree_process and techtree_process.poll() is None:
+        try:
+            p = psutil.Process(techtree_process.pid)
+            p.terminate()
+            try:
+                p.wait(timeout=2.0)
+            except:
+                pass
+            if p.is_running():
+                p.kill()
+            logger.info("Tech Tree Analyzer terminated.")
+        except Exception as e:
+            logger.warning(f"Failed to terminate Tech Tree Analyzer: {e}")
+
+
+# Registra cleanup
+atexit.register(kill_techtree)
 
 # ============================================================
 # LOGGING THREAD
@@ -606,9 +706,9 @@ class App:
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Ruler Intelligence Suite | Strategic Analysis Directorate. ALPHA v.0.1. By Mooning")
+        self.root.title("Ruler Intelligence Suite | Strategic Analysis Directorate. V 1.0 By Mooning")
         # Sized to match the vertical clipboard / paper background
-        self.root.geometry("600x730")
+        self.root.geometry("600x750")
         self.root.resizable(False, False)
 
         self.config = load_config()
@@ -620,10 +720,15 @@ class App:
         self.game_name_var = tk.StringVar(value=self.config.get("game_name", ""))
         self.nation_var = tk.StringVar(value=self.config.get("nation", ""))
         self.overlay_var = tk.BooleanVar(value=self.config.get("enable_overlay", True))
+        self.techtree_var = tk.BooleanVar(value=self.config.get("enable_techtree", True))
         self.last_saved_var = tk.StringVar(value="No data acquired")
 
         self.setup_style()
         self.setup_ui()
+
+    def _launch_techtree(self):
+        """Manually launch the Tech Tree Analyzer."""
+        launch_techtree(self.config)
 
     # ---------------- UI STYLE ----------------
 
@@ -864,25 +969,25 @@ class App:
     def _add_tools_area(self):
         """Add overlay checkbox, config button, archives and analytics buttons."""
 
-        tools_frame = ttk.Frame(self.logger_frame)
-        tools_frame.pack(fill=tk.X, pady=5)
+        # Row 1: Checkboxes and config
+        row1 = ttk.Frame(self.logger_frame)
+        row1.pack(fill=tk.X, pady=(5, 2))
+        
+        ttk.Checkbutton(row1, text="Overlay", variable=self.overlay_var).pack(side=tk.LEFT, padx=5)
+        ttk.Checkbutton(row1, text="Tech Tree", variable=self.techtree_var).pack(side=tk.LEFT, padx=5)
+        ttk.Button(row1, text="CONFIG", command=self._open_settings).pack(side=tk.RIGHT, padx=5)
 
-        # Left side
-        options_frame = ttk.Frame(tools_frame)
-        options_frame.pack(side=tk.LEFT)
-        ttk.Checkbutton(options_frame, text="Overlay", variable=self.overlay_var).pack(side=tk.LEFT, padx=5)
-        ttk.Button(options_frame, text="CONFIG", command=self._open_settings).pack(side=tk.LEFT, padx=5)
+        # Row 2: Action buttons
+        row2 = ttk.Frame(self.logger_frame)
+        row2.pack(fill=tk.X, pady=(2, 5))
+        
+        ttk.Button(row2, text="TECH TREE", command=self._launch_techtree).pack(side=tk.LEFT, padx=5)
+        ttk.Button(row2, text="ARCHIVES", command=lambda: os.startfile(str(LOGS_DIR))).pack(side=tk.LEFT, padx=5)
 
-        # Right side
-        actions_frame = ttk.Frame(tools_frame)
-        actions_frame.pack(side=tk.RIGHT)
-        ttk.Button(actions_frame, text="ARCHIVES", command=lambda: os.startfile(str(LOGS_DIR))).pack(side=tk.LEFT, padx=5)
-
-        # Analytics themed button
+        # Analytics button - prominent position
         style = ttk.Style()
         style.configure("Analytics.TButton", foreground="#004400", background="#AACCBB")
-        ttk.Button(actions_frame, text="INTEL ANALYSIS", style="Analytics.TButton", command=show_simple_analytics).pack(side=tk.LEFT, padx=5)
-
+        ttk.Button(row2, text="INTEL ANALYSIS", style="Analytics.TButton", command=show_simple_analytics).pack(side=tk.RIGHT, padx=5)
 
     # ---------------- UI EVENTS / LOGIC BINDINGS ----------------
 
@@ -891,6 +996,10 @@ class App:
 
     def _launch_game(self):
         """Launch the game via Steam and start watching for the process."""
+        self.config["enable_overlay"] = self.overlay_var.get()
+        self.config["enable_techtree"] = self.techtree_var.get()
+        save_config(self.config)
+        
         self.launch_btn.config(state="disabled", text="INITIATING...")
         launch_game_steam(STEAM_APP_ID)
         if not self.is_monitoring:
@@ -929,6 +1038,9 @@ class App:
 
         if self.overlay_var.get():
             launch_overlay(self.config)
+        
+        if self.techtree_var.get():
+            launch_techtree(self.config)
 
         threading.Thread(target=self._monitor_game_exit, daemon=True).start()
 

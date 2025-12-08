@@ -1,13 +1,34 @@
 import sys
 import ctypes
+import subprocess
+import time
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QRect, QTimer
 from PyQt5.QtGui import QPainter, QColor, QFont
 from PyQt5.QtWidgets import QWidget, QApplication
 
-# Import official effect logic from your updated tech_effects.py
-from tech_effects import EFFECT_MAP as CORE_EFFECT_MAP, BOOL_EFFECT_MAP
+# =============================================================================
+# OPTIONAL IMPORTS (Graceful degradation)
+# =============================================================================
+
+# IPC Bridge for communication with Tech Analyzer
+try:
+    from ipc_bridge import IPCClient, wait_for_server
+    IPC_AVAILABLE = True
+except ImportError:
+    IPCClient = None
+    wait_for_server = None
+    IPC_AVAILABLE = False
+    print("[System] WARNING: ipc_bridge.py not found. Tech Analyzer integration limited.")
+
+try:
+    # Import official effect logic from your updated tech_effects.py
+    from tech_effects import EFFECT_MAP as CORE_EFFECT_MAP, BOOL_EFFECT_MAP
+except ImportError:
+    CORE_EFFECT_MAP = {}
+    BOOL_EFFECT_MAP = {}
+    print("[System] WARNING: tech_effects.py not found. Effect details will be limited.")
 
 try:
     import pymem
@@ -18,13 +39,12 @@ except ImportError:
 
 from unit_parser import parse_default_unit, Unit, load_range_database
 from tech_parser import load_tech_file
-# UPDATED IMPORT
 from spotting_parser import load_spotting_file
 from painters import draw_unit_list, draw_comparison_table
 from events import handle_mouse_press, handle_wheel
 
 # =============================================================================
-# TECH LABEL MAP (UPDATED TO OFFICIAL DOCS)
+# TECH LABEL MAP (Complete)
 # =============================================================================
 TECH_LABEL_MAP = {
     # --- Attack Values ---
@@ -57,11 +77,11 @@ TECH_LABEL_MAP = {
     161: "Combat Time (Ammo)",
 
     # --- Logistics ---
-    162: "Fuel Consumption",  # 1.0 = +100% consumo (negativo)
+    162: "Fuel Consumption",  
     163: "Missile Capacity", 
-    164: "Unit Efficiency",   # Morale/Quality base
+    164: "Unit Efficiency",   
     165: "Ammo Capacity",
-    166: "Fuel Tank Size",     # Capacità serbatoio
+    166: "Fuel Tank Size",     
 
     # --- Spotting ---
     167: "Spotting Range (Vis)", 
@@ -75,7 +95,15 @@ class OverlayINS(QWidget):
     Supreme Ruler 2030 - 3-way unit comparison overlay.
     """
 
-    SELECTED_UNIT_OFFSET = 0x1767628 
+    # --- MEMORY OFFSETS ---
+    # Blueprint Offset (Menu di costruzione)
+    SELECTED_UNIT_OFFSET_BLUEPRINT = 0x1767628
+
+    # Worldmap click offset (Unità sulla mappa)
+    SELECTED_UNIT_OFFSET_WORLD = 0x1769714
+    
+    # Selected Technology Offset
+    SELECTED_TECH_OFFSET = 0x17676D8
 
     def __init__(self, 
                  default_unit_path: str | None = None, 
@@ -83,18 +111,30 @@ class OverlayINS(QWidget):
                  default_spotting_path: str | None = None,
                  range_database_path: str | None = None):
         super().__init__()
+        
+        # Memory State
+        self.last_unit_blueprint_id = None
+        self.last_unit_world_id = None
+        self.current_selected_unit_id = None  
+        self.previous_selected_unit_id = None
+
+        self.prev_raw_blue = -1
+        self.prev_raw_world = -1
+        self.active_source = "world"  # Può essere 'world' o 'blue'        
+        
+        # Process Tracking for Tech Analyzer
+        self.analyzer_process = None
 
         # --- Tech Impact Scrollbar State ---
         self.techimpact_dragging = False
         self.techimpact_drag_offset = 0
 
-        # Data
+        # Data Containers
         self.units: list[Unit] = []
         self.filtered_units: list[Unit] = []
-        
         self.tech_unlocks: dict[int, list[Unit]] = {}
 
-        # Selection slots
+        # Selection slots (Comparison Columns)
         self.selected_unit_b: Unit | None = None
         self.selected_unit_c: Unit | None = None
         self.selected_unit_d: Unit | None = None
@@ -103,7 +143,7 @@ class OverlayINS(QWidget):
         self.tech_light: dict[int, dict] = {}
         self.tech_full: dict[int, dict] = {}
 
-        # Active techs for B/C/D
+        # Active techs for B/C/D columns
         self.active_techs: dict[str, set[int]] = {
             "b": set(),
             "c": set(),
@@ -119,6 +159,7 @@ class OverlayINS(QWidget):
 
         # Lock & control buttons
         self.lock_b: bool = False
+        self.manual_selection_b: bool = False  # True when user clicked unit in overlay list
         self.btn_lock_rect = QRect()
         self.btn_b_to_c_rect = QRect()
         self.btn_c_to_d_rect = QRect()
@@ -128,13 +169,13 @@ class OverlayINS(QWidget):
         self.selected_category: str = "all"
         self.focus_search: bool = False
         
-        # Scrolling
+        # Scrolling State
         self.line_height = 22
         self.unit_scroll_offset = 0       
         self.stats_scroll_offset = 0      
         self.max_stats_scroll = 0         
 
-        # Rects
+        # Rects Definitions
         self.close_btn_rect = QRect()
         self.unit_list_rect = QRect()
         self.search_rect = QRect()
@@ -168,16 +209,21 @@ class OverlayINS(QWidget):
         self.techimpact_scrollbar_track_rect = QRect()
         self.techimpact_scrollbar_handle_rect = QRect()
 
-        # Visibility & input
+        # Visibility & Input State
         self.menu_visible = False
         self.key_was_pressed = False
+        self.alt_t_was_pressed = False
+        
+        # Alt+T Cooldown System (prevents duplicate launches)
+        self.alt_t_cooldown_ms = 1000  # Minimum ms between Alt+T triggers
+        self.alt_t_last_trigger = 0    # Timestamp of last successful trigger
 
-        # Memory
+        # Memory Handlers
         self.pm = None
         self.base_addr = None
         self.last_raw_selected_id: int | None = None
 
-        # Init
+        # Initialization Routine
         self.init_window()
         
         # 1. Load Range Database FIRST (so parser can use it)
@@ -192,17 +238,26 @@ class OverlayINS(QWidget):
         # 4. Load Techs
         self.load_techs(default_ttrx_path)
         
+        # Calculate tech dependencies
         self._calculate_tech_unlocks()
  
         self.update_filter()
         self._attach_process()
 
-        # Timer loop 
+        # Timer loop (30ms = approx 33 FPS)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.game_loop)
         self.timer.start(30) 
         
+        self.last_selected_tech_id: int | None = None
+
+        print("-" * 60)
+        print("SR2030 - INS Overlay Initialized")
+        print("-" * 60)
+
+        
     def _calculate_tech_unlocks(self):
+        """Map which techs unlock which units for fast lookup."""
         self.tech_unlocks = {}
         for u in self.units:
             tid = getattr(u, 'req_tech_id', 0) or getattr(u, 'tech_req', 0)
@@ -212,11 +267,9 @@ class OverlayINS(QWidget):
                 self.tech_unlocks[tid].append(u)
         print(f"[System] Mapped unlocks for {len(self.tech_unlocks)} technologies.")
 
-        print("-" * 60)
-        print("SR2030 - INS Overlay (Full Features)")
-        print("-" * 60)
-
-    # ------------------------------------------------------------------ Memory
+    # ------------------------------------------------------------------ 
+    # MEMORY READING
+    # ------------------------------------------------------------------ 
     def _attach_process(self):
         if pymem is None:
             return
@@ -226,7 +279,6 @@ class OverlayINS(QWidget):
             self.base_addr = mod.lpBaseOfDll
             print(f"[Memory] Attached to SR2030, base = {hex(self.base_addr)}")
         except Exception as e:
-            # Silent after first fail
             self.pm = None
             self.base_addr = None
 
@@ -237,18 +289,59 @@ class OverlayINS(QWidget):
             self._attach_process()
             if not self.pm or not self.base_addr:
                 return None
+
         try:
-            addr = self.base_addr + self.SELECTED_UNIT_OFFSET
-            val = self.pm.read_int(addr)
-            self.last_raw_selected_id = val
-            if val <= 0:
-                return None
-            return val
-        except Exception:
+            addr_blue = self.base_addr + self.SELECTED_UNIT_OFFSET_BLUEPRINT
+            val_blue = self.pm.read_int(addr_blue)
+
+            addr_world = self.base_addr + self.SELECTED_UNIT_OFFSET_WORLD
+            val_world = self.pm.read_int(addr_world)
+
+            blue_changed = (val_blue != self.prev_raw_blue)
+            world_changed = (val_world != self.prev_raw_world)
+
+            self.prev_raw_blue = val_blue
+            self.prev_raw_world = val_world
+
+            if world_changed and val_world > 0:
+                self.active_source = "world"
+                self.last_raw_selected_id = val_world
+                return val_world
+
+            if blue_changed and val_blue > 0:
+                self.active_source = "blue"
+                self.last_raw_selected_id = val_blue
+                return val_blue
+
+            if self.active_source == "blue" and val_blue > 0:
+                self.last_raw_selected_id = val_blue
+                return val_blue
+            
+            self.active_source = "world"
+            self.last_raw_selected_id = val_world
+            return val_world
+
+        except Exception as e:
             self.pm = None
             self.base_addr = None
             return None
 
+    def _read_selected_tech_id(self) -> int | None:
+        """Read the currently selected tech ID from game memory."""
+        if not self.pm or not self.base_addr:
+            self._attach_process()
+        if not self.pm or not self.base_addr:
+            return None
+        try:
+            addr = self.base_addr + self.SELECTED_TECH_OFFSET
+            tech_id = self.pm.read_int(addr)
+            if tech_id > 0 and tech_id < 200000:  
+                return tech_id
+            return None
+        except Exception as e:
+            print(f"[Memory] Tech read error: {e}")
+            return None
+        
     def _read_selected_unit_obj(self) -> Unit | None:
         uid = self._read_selected_unit_raw()
         if uid is None:
@@ -258,12 +351,15 @@ class OverlayINS(QWidget):
                 return u
         return None
 
-    # ------------------------------------------------------------ Game / loop
+    # ------------------------------------------------------------ 
+    # MAIN LOOP
+    # ------------------------------------------------------------ 
     def game_loop(self):
-        # Hotkey (INS)
+        # 1. Check INS Key (Toggle Menu)
         try:
-            pressed = (ctypes.windll.user32.GetAsyncKeyState(0x2D) & 0x8000)
-            if pressed:
+            # 0x2D = INS key
+            pressed_ins = (ctypes.windll.user32.GetAsyncKeyState(0x2D) & 0x8000)
+            if pressed_ins:
                 if not self.key_was_pressed:
                     self.toggle_menu()
                     self.key_was_pressed = True
@@ -272,16 +368,44 @@ class OverlayINS(QWidget):
         except Exception:
             pass
 
-        # Update column B from selected unit in game ONLY if not locked
-        if self.menu_visible and not self.lock_b:
+        # 2. Check Alt + T (Tech Analyzer Shortcut)
+        try:
+            # 0x12 = ALT, 0x54 = T
+            pressed_alt = (ctypes.windll.user32.GetAsyncKeyState(0x12) & 0x8000)
+            pressed_t = (ctypes.windll.user32.GetAsyncKeyState(0x54) & 0x8000)
+
+            if pressed_alt and pressed_t:
+                if not self.alt_t_was_pressed:
+                    # Check cooldown to prevent rapid-fire triggers
+                    current_time = int(time.time() * 1000)
+                    if current_time - self.alt_t_last_trigger >= self.alt_t_cooldown_ms:
+                        print("[Overlay] Detected Alt+T shortcut!")
+                        self._open_techtree_with_selected()
+                        self.alt_t_last_trigger = current_time
+                    else:
+                        print("[Overlay] Alt+T cooldown active, ignoring...")
+                    self.alt_t_was_pressed = True
+            else:
+                self.alt_t_was_pressed = False
+        except Exception as e:
+            print(f"[Overlay] Alt+T check error: {e}")
+
+        # 3. Update Selected Unit (Column B) from in-game selection
+        # Skip if: menu hidden, locked, or user made manual selection in overlay
+        if self.menu_visible and not self.lock_b and not self.manual_selection_b:
             u = self._read_selected_unit_obj()
             if u:
                 if self.selected_unit_b is None or self.selected_unit_b.id != u.id:
+                    # Auto-shift: old B becomes C
+                    if self.selected_unit_b:
+                        self.selected_unit_c = self.selected_unit_b
                     self.selected_unit_b = u
-                    self.active_techs["b"] = set(u.tech_ids)
+                    self.active_techs["b"] = set(u.tech_ids) if hasattr(u, 'tech_ids') else set()
                     self.update()
 
-    # ------------------------------------------------------------- Init / load
+    # ------------------------------------------------------------- 
+    # INITIALIZATION & LOADING
+    # ------------------------------------------------------------- 
     def init_window(self):
         screen = QApplication.primaryScreen()
         g = screen.geometry() if screen else QRect(0, 0, 1920, 1080)
@@ -316,15 +440,12 @@ class OverlayINS(QWidget):
     def load_range_database(self, range_database_path: str | None):
         """Load unit range stats database from CSV (silent if not found)"""
         paths = []
-        
-        # User-specified path
         if range_database_path:
             paths.append(Path(range_database_path))
         
         # Same directory as overlay script/exe
         paths.append(Path(__file__).parent / "unit_rangestats_database.csv")
-        
-        # Current working directory (launcher location)
+        # Current working directory
         paths.append(Path.cwd() / "unit_rangestats_database.csv")
         
         for p in paths:
@@ -366,7 +487,9 @@ class OverlayINS(QWidget):
                     
         print("[Tech] WARNING: no DEFAULT.TTRX loaded, tech bonuses disabled.")
 
-    # --------------------------------------------------------------- Filtering
+    # --------------------------------------------------------------- 
+    # FILTERING
+    # --------------------------------------------------------------- 
     def _unit_category(self, u: Unit) -> str:
         c = u.class_num
         if 0 <= c <= 6:
@@ -396,14 +519,18 @@ class OverlayINS(QWidget):
         self.filtered_units = res
         self.unit_scroll_offset = 0
 
-    # -------------------------------------------------------------- Toggle UI
+    # -------------------------------------------------------------- 
+    # UI ACTIONS
+    # -------------------------------------------------------------- 
     def toggle_menu(self):
         if not self.menu_visible:
             self.menu_visible = True
+            self.manual_selection_b = False  # Reset manual flag on open
+            # Force read on open to grab current selection immediately
             u = self._read_selected_unit_obj()
             if u:
                 self.selected_unit_b = u
-                self.active_techs["b"] = set(u.tech_ids)
+                self.active_techs["b"] = set(u.tech_ids) if hasattr(u, 'tech_ids') else set()
             self.show()
             self.activateWindow()
             self.raise_()
@@ -411,21 +538,37 @@ class OverlayINS(QWidget):
             self.menu_visible = False
             self.hide()
             self.focus_search = False
-            # Reset special focus
+            # Reset special focus fields
             self.tech_search_focus = False
             self.focus_impact_unit_search = False
 
-    # ------------------------------------------------------------- Qt events
+    # ------------------------------------------------------------- 
+    # INPUT EVENTS
+    # ------------------------------------------------------------- 
     def keyPressEvent(self, event):
         if not self.menu_visible:
             return
         
-        # If no search field has focus, check global hotkeys (e.g., Lock)
+        key = event.key()
+        modifiers = event.modifiers()
+        
+        # Check if any text box has focus
         no_focus_active = not (self.focus_search or self.tech_search_focus or self.focus_impact_unit_search)
 
-        # Toggle Lock B
+        # Toggle Lock B (L key)
         if no_focus_active and event.key() == Qt.Key_L:
             self.lock_b = not self.lock_b
+            self.update()
+            return
+        
+        # Reset/Sync with in-game selection (R key)
+        if no_focus_active and event.key() == Qt.Key_R:
+            self.manual_selection_b = False  # Clear manual flag
+            # Force immediate sync with in-game selection
+            u = self._read_selected_unit_obj()
+            if u:
+                self.selected_unit_b = u
+                self.active_techs["b"] = set(u.tech_ids) if hasattr(u, 'tech_ids') else set()
             self.update()
             return
 
@@ -457,6 +600,7 @@ class OverlayINS(QWidget):
         elif self.tech_search_focus and self.view_mode == "tech_impact":
              key = event.key()
              if key in (Qt.Key_Return, Qt.Key_Enter):
+                # If results exist, select the first one on Enter
                 if self.tech_search_results:
                     self.selected_tech_for_impact = self.tech_search_results[0][0]
                 self.update()
@@ -488,7 +632,7 @@ class OverlayINS(QWidget):
                 return
              elif key == Qt.Key_Backspace:
                 self.impact_unit_search = self.impact_unit_search[:-1]
-                self.techimpact_scroll_offset = 0 # reset scroll
+                self.techimpact_scroll_offset = 0 
                 self.update()
                 return
              elif key == Qt.Key_Escape:
@@ -504,6 +648,13 @@ class OverlayINS(QWidget):
                     self.techimpact_scroll_offset = 0
                     self.update()
              return
+             
+        # ----------------------------------------
+        # GLOBAL SHORTCUTS
+        # ----------------------------------------
+        if key == Qt.Key_T and (modifiers & Qt.AltModifier):
+            self._open_techtree_with_selected()
+            return
 
     def wheelEvent(self, event):
         if not self.menu_visible:
@@ -511,9 +662,8 @@ class OverlayINS(QWidget):
         handle_wheel(self, event)
 
     # -------------------------------------------------------------
-    # MOUSE EVENTS (Fixed Logic)
+    # MOUSE EVENTS
     # -------------------------------------------------------------
-
     def mousePressEvent(self, event):
         if not self.menu_visible:
             return
@@ -521,28 +671,28 @@ class OverlayINS(QWidget):
         pos = event.pos()
 
         # ==============================================================
-        # 1. PRIORITY FIX: CHECK DROPDOWN SELECTION FIRST!
+        # 1. Tech Dropdown Selection (Priority)
         # ==============================================================
         if self.view_mode == "tech_impact" and self.tech_search_focus:
             for rect, tid in getattr(self, "tech_search_result_rects", []):
                 if rect.contains(pos):
-                    # APPLY SELECTION
+                    # Apply Selection
                     self.selected_tech_for_impact = tid
                     
                     # Update text box info
                     info = self.tech_light.get(tid, {})
                     self.tech_search = info.get("short_title", f"Tech {tid}")
 
-                    # Close menu
+                    # Close dropdown
                     self.tech_search_results = []
                     self.tech_search_result_rects = []
                     self.tech_search_focus = False
 
                     self.update()
-                    return  # <--- STOP HERE! Click consumed.
+                    return 
 
         # ------------------------------------------------------------------
-        # 2. FOCUS HANDLING for the three search boxes
+        # 2. Focus Handling
         # ------------------------------------------------------------------
         if self.search_rect.contains(pos):
             self.focus_search = True
@@ -561,21 +711,45 @@ class OverlayINS(QWidget):
             self.focus_impact_unit_search = True
 
         else:
+            # Click elsewhere clears focus
             self.focus_search = False
             self.tech_search_focus = False
             self.focus_impact_unit_search = False
 
         # ------------------------------------------------------------------
-        # 3. Delegate general interactions
+        # 3. Unit List Click (with manual selection flag)
+        # ------------------------------------------------------------------
+        if self.view_mode == "compare" and self.unit_list_rect.contains(pos):
+            # Calculate which unit was clicked
+            btn = event.button()
+            local_y = pos.y() - self.unit_list_rect.top()
+            idx = (local_y // self.line_height) + self.unit_scroll_offset
+            
+            if 0 <= idx < len(self.filtered_units):
+                u = self.filtered_units[idx]
+                if btn == Qt.LeftButton:
+                    # Manual selection - sets flag to prevent memory override
+                    self.select_unit_b_manual(u)
+                elif btn == Qt.RightButton:
+                    self.selected_unit_c = u
+                    self.active_techs["c"] = set(u.tech_ids) if hasattr(u, 'tech_ids') else set()
+                elif btn == Qt.MiddleButton:
+                    self.selected_unit_d = u
+                    self.active_techs["d"] = set(u.tech_ids) if hasattr(u, 'tech_ids') else set()
+                self.update()
+                return  # Don't pass to handle_mouse_press
+
+        # ------------------------------------------------------------------
+        # 4. Standard Interactions (Tabs, Buttons, etc. - but not unit list)
         # ------------------------------------------------------------------
         handle_mouse_press(self, event)
 
         # ------------------------------------------------------------------
-        # 4. SPECIAL INTERACTIONS FOR TECH IMPACT MODE
+        # 4. Tech Impact Mode Interactions
         # ------------------------------------------------------------------
         if self.view_mode == "tech_impact":
 
-            # A) Check Scrollbar Handle
+            # A) Scrollbar Handle
             if hasattr(self, "techimpact_scrollbar_handle_rect") and \
                not self.techimpact_scrollbar_handle_rect.isNull() and \
                self.techimpact_scrollbar_handle_rect.contains(pos):
@@ -585,7 +759,7 @@ class OverlayINS(QWidget):
                 self.update()
                 return
 
-            # B) Check Scrollbar Track
+            # B) Scrollbar Track
             if hasattr(self, "techimpact_scrollbar_track_rect") and \
                not self.techimpact_scrollbar_track_rect.isNull() and \
                self.techimpact_scrollbar_track_rect.contains(pos):
@@ -600,17 +774,20 @@ class OverlayINS(QWidget):
                     self.update()
                 return
 
-            # C) Selecting a UNIT from the Tech Impact list
+            # C) Unit Selection in Tech List
             btn = event.button()
             for uid, rect in self.techimpact_unit_rects.items():
                 if rect.contains(pos):
                     u = self._get_unit_by_id(uid)
                     if btn == Qt.LeftButton:
                         self.selected_unit_b = u
+                        self.manual_selection_b = True  # Mark as manual selection
+                        self.active_techs["b"] = set(u.tech_ids) if hasattr(u, 'tech_ids') else set()
                     elif btn == Qt.RightButton:
                         self.selected_unit_d = u
                     elif btn == Qt.MiddleButton:
                         self.selected_unit_c = u
+                    
                     self.focus_impact_unit_search = False
                     self.update()
                     return
@@ -620,6 +797,8 @@ class OverlayINS(QWidget):
     def mouseMoveEvent(self, event):
         if not self.menu_visible:
             return
+        
+        # Handle Scrollbar Drag
         if self.view_mode == "tech_impact" and self.techimpact_dragging:
             pos = event.pos()
             if hasattr(self, "techimpact_scroll_start_y"):
@@ -643,7 +822,9 @@ class OverlayINS(QWidget):
             self.techimpact_drag_offset = 0
             self.update()
 
-    # ------------------------------------------------------------- Painting UI
+    # ------------------------------------------------------------- 
+    # PAINTING
+    # ------------------------------------------------------------- 
     def paintEvent(self, event):
         if not self.menu_visible:
             return
@@ -657,6 +838,7 @@ class OverlayINS(QWidget):
         px = full.width() - panel_w - 20
         py = 30
 
+        # Background
         bg_rect = QRect(px, py, panel_w, panel_h)
         p.setBrush(QColor(20, 25, 30, 240))
         p.setPen(QColor(0, 100, 160))
@@ -677,11 +859,12 @@ class OverlayINS(QWidget):
         p.setPen(QColor(170, 170, 170))
         p.setFont(QFont("Consolas", 9))
         rid = self.last_raw_selected_id if self.last_raw_selected_id is not None else "-"
-        lock_txt = "LOCK B: ON" if self.lock_b else "LOCK B: OFF"
+        lock_txt = "LOCK" if self.lock_b else "lock"
+        sync_txt = "MANUAL" if self.manual_selection_b else "SYNC"
         p.drawText(
             debug_rect,
             Qt.AlignVCenter | Qt.AlignLeft,
-            f"Selected ID (raw): {rid}   | {lock_txt}   | L=B  R=C  M=D",
+            f"ID:{rid} | B:{sync_txt} | L={lock_txt} | [L]ock [R]eset",
         )
 
         # Search bar (Units)
@@ -693,6 +876,7 @@ class OverlayINS(QWidget):
         p.setFont(QFont("Consolas", 10))
         
         display_text = self.search_query
+        # Blinking cursor effect
         if self.focus_search and (len(display_text) == 0 or (ctypes.windll.kernel32.GetTickCount() // 500) % 2 == 0):
              display_text += "|"
         elif not self.focus_search and not self.search_query:
@@ -741,11 +925,27 @@ class OverlayINS(QWidget):
         p.drawRect(self.stats_rect)
         draw_comparison_table(self, p, self.stats_rect)
 
+    # -------------------------------------------------------------
+    # HELPERS
+    # -------------------------------------------------------------
     def _get_unit_by_id(self, uid: int):
         for u in self.units:
             if u.id == uid:
                 return u
         return None
+    
+    def select_unit_b_manual(self, unit):
+        """
+        Select a unit in column B via manual click (from search list).
+        Sets the manual_selection flag to prevent memory override.
+        """
+        if unit is None:
+            return
+        self.selected_unit_b = unit
+        self.manual_selection_b = True
+        if hasattr(unit, 'tech_ids'):
+            self.active_techs["b"] = set(unit.tech_ids)
+        self.update()
         
     def get_tech_modified_stats(self, unit, tech_id):
         """
@@ -796,9 +996,7 @@ class OverlayINS(QWidget):
             rows.append((attr, label, base, boosted))
 
         return rows
-        # -------------------------------------------------------------
-    # Build merged unit list for Tech Impact View
-    # -------------------------------------------------------------
+        
     def build_tech_impact_unit_list(self, tech_id):
         """
         Returns a clean merged list of:
@@ -847,8 +1045,141 @@ class OverlayINS(QWidget):
         final_list.sort(key=lambda x: (not x["effects"], not x["unlock"], x["unit"].id))
 
         return final_list
-
         
+    def _open_techtree_with_selected(self):
+        """
+        Open Tech Tree Analyzer and navigate to the selected tech.
+        Uses file-based IPC for communication if analyzer is already running.
+        Works both in development (Python) and compiled exe mode.
+        """
+        # Debug: show memory state
+        print(f"[Overlay] Alt+T triggered. Reading tech from memory...")
+        print(f"[Overlay]   pm={self.pm is not None}, base={hex(self.base_addr) if self.base_addr else 'None'}")
+        
+        tech_id = self._read_selected_tech_id()
+        
+        if tech_id is None:
+            print("[Overlay] No tech selected in game (tech_id=None)")
+            print("[Overlay]   Make sure you have a tech selected in the research screen")
+            return
+        
+        print(f"[Overlay] Tech ID read from memory: {tech_id}")
+        
+        # --- Strategy 1: Use IPC if analyzer is already running ---
+        if IPC_AVAILABLE and IPCClient.is_server_running():
+            print("[Overlay] Analyzer already running, sending NAVIGATE via IPC...")
+            if IPCClient.send_navigate(tech_id):
+                print(f"[Overlay] SUCCESS: Sent NAVIGATE:{tech_id} (includes focus)")
+                return
+            else:
+                print("[Overlay] IPC write failed, will launch new instance")
+        else:
+            if not IPC_AVAILABLE:
+                print("[Overlay] IPC not available (ipc_bridge.py missing)")
+            else:
+                print("[Overlay] Analyzer not running, will launch new instance")
+        
+        # --- Strategy 2: Launch new analyzer process ---
+        
+        # Clean up previous process if dead
+        if self.analyzer_process is not None:
+            if self.analyzer_process.poll() is not None:
+                # Process has terminated, clear reference
+                self.analyzer_process = None
+        
+        # If process is still running but IPC failed, terminate it
+        if self.analyzer_process is not None:
+            if self.analyzer_process.poll() is None:
+                print("[Overlay] Terminating unresponsive analyzer process...")
+                try:
+                    self.analyzer_process.terminate()
+                    self.analyzer_process.wait(timeout=2)
+                except Exception:
+                    try:
+                        self.analyzer_process.kill()
+                    except:
+                        pass
+                self.analyzer_process = None
+        
+        # --- Detect if running as compiled exe ---
+        is_frozen = getattr(sys, 'frozen', False)
+        
+        if is_frozen:
+            # Running as compiled exe - look for tech_tree_analyzer.exe
+            # PyInstaller sets sys._MEIPASS for temp extraction, but exe is in original dir
+            exe_dir = Path(sys.executable).parent
+            
+            exe_candidates = [
+                exe_dir / "tech_tree_analyzer" / "tech_tree_analyzer.exe",  # Subfolder (build_all.bat)
+                exe_dir / "tech_tree_analyzer.exe",                          # Same folder
+            ]
+            
+            analyzer_exe = None
+            for p in exe_candidates:
+                print(f"[Overlay] Checking for analyzer exe: {p}")
+                if p.exists():
+                    analyzer_exe = str(p)
+                    break
+            
+            if not analyzer_exe:
+                print("[Overlay] ERROR: tech_tree_analyzer.exe not found!")
+                print(f"[Overlay]   Searched in: {exe_dir}")
+                return
+            
+            try:
+                print(f"[Overlay] Launching compiled analyzer: {analyzer_exe}")
+                self.analyzer_process = subprocess.Popen([
+                    analyzer_exe,
+                    "--select-tech", str(tech_id)
+                ])
+                
+                # Wait for IPC server
+                if IPC_AVAILABLE and wait_for_server:
+                    if wait_for_server(timeout=5.0):
+                        print("[Overlay] Analyzer IPC server is ready")
+                    else:
+                        print("[Overlay] Analyzer started but IPC server not responding")
+                        
+            except Exception as e:
+                print(f"[Overlay] Failed to launch analyzer exe: {e}")
+                self.analyzer_process = None
+        
+        else:
+            # Running as Python script - use sys.executable (Python interpreter)
+            script_candidates = [
+                Path(__file__).parent / "tech_tree_analyzer.py",
+                Path(__file__).parent / "tech_tree_analyzer_v2_1.py",
+            ]
+            
+            script_path = None
+            for p in script_candidates:
+                if p.exists():
+                    script_path = str(p)
+                    break
+            
+            if not script_path:
+                print("[Overlay] ERROR: Tech Tree Analyzer script not found.")
+                return
+            
+            try:
+                print(f"[Overlay] Launching Tech Tree Analyzer: {script_path}")
+                self.analyzer_process = subprocess.Popen([
+                    sys.executable,
+                    script_path,
+                    "--select-tech", str(tech_id)
+                ])
+                
+                # If IPC available, wait for server to come up for future commands
+                if IPC_AVAILABLE and wait_for_server:
+                    if wait_for_server(timeout=5.0):
+                        print("[Overlay] Analyzer IPC server is ready")
+                    else:
+                        print("[Overlay] Analyzer started but IPC server not responding")
+                        
+            except Exception as e:
+                print(f"[Overlay] Failed to launch Tech Tree Analyzer: {e}")
+                self.analyzer_process = None
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     overlay = OverlayINS()

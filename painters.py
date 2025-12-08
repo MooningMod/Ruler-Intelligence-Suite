@@ -243,7 +243,7 @@ def _draw_compare_stats_table(
         if missile_range_raw > 0:
             # Calculate displayed range: special_41_B * 4
             displayed_range = int(missile_range_raw * 4)
-            txt += f" Raw:{displayed_range} km"
+            txt += f" RAW:{displayed_range}"
             return (txt, False)
         
         # Otherwise use standard range display
@@ -268,11 +268,11 @@ def _draw_compare_stats_table(
             def_range = getattr(u, def_attr_name, 0.0)
         
         if raw_range > 0:
-            txt += f" Raw:{raw_range} km"
+            txt += f" RAW:{raw_range}"
         
         has_def = def_range > 0
         if has_def:
-            txt += f" DEF:{def_range:.1f} km"
+            txt += f" DEF:{def_range:.1f}"
         
         return (txt, has_def)
 
@@ -431,7 +431,7 @@ def _draw_compare_stats_table(
                     base_width = metrics.horizontalAdvance(base_txt)
                     
                     # Draw RAW in yellow/gold
-                    raw_txt = " RAW:" + raw_def_parts[0]
+                    raw_txt = " Km:" + raw_def_parts[0]
                     p.setPen(QColor(255, 200, 50))  # Yellow/gold for RAW
                     p.drawText(QRect(x + col_w//2 + base_width//2, y, col_w, row_h), 
                              Qt.AlignLeft | Qt.AlignVCenter, raw_txt)
